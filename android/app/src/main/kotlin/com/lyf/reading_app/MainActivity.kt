@@ -18,6 +18,7 @@ import java.io.File
 class MainActivity : FlutterActivity() {
     private companion object {
         const val FILE_CHANNEL = "com.lyf.reading_app/file_picker"
+        const val STORAGE_CHANNEL = "com.lyf.reading_app/storage"
         const val PICK_FILE_REQUEST = 4107
         const val MAX_IMPORT_BYTES = 50 * 1024 * 1024L
     }
@@ -44,12 +45,20 @@ class MainActivity : FlutterActivity() {
                     if (!coverImage) {
                         putExtra(
                             Intent.EXTRA_MIME_TYPES,
-                            arrayOf("application/epub+zip", "text/plain", "application/pdf")
+                            arrayOf("application/epub+zip", "text/plain")
                         )
                     }
                 }
                 pendingFileResult = result
                 startActivityForResult(intent, PICK_FILE_REQUEST)
+            }
+        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, STORAGE_CHANNEL)
+            .setMethodCallHandler { call, result ->
+                if (call.method == "getApplicationSupportPath") {
+                    result.success(filesDir.absolutePath)
+                } else {
+                    result.notImplemented()
+                }
             }
     }
 

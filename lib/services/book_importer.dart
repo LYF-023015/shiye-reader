@@ -40,26 +40,12 @@ abstract final class BookImporter {
       );
     }
     if (extension == 'epub') {
-      try {
-        return _parseEpub(file.bytes, fallbackTitle);
-      } on Object {
-        return _fallback(file, fallbackTitle, 'EPUB');
-      }
+      return _parseEpub(file.bytes, fallbackTitle);
     }
     if (extension == 'pdf') {
-      return ImportedBookData(
-        title: fallbackTitle,
-        author: '本地导入',
-        coverBytes: file.coverBytes,
-        chapters: const [
-          Chapter(
-            title: 'PDF 文档',
-            content: 'PDF 已成功导入。当前版本使用第一页作为封面；正文阅读将在后续接入分页 PDF 阅读模式。',
-          ),
-        ],
-      );
+      throw const FormatException('当前版本暂不支持 PDF 正文阅读');
     }
-    return _fallback(file, fallbackTitle, extension.toUpperCase());
+    throw FormatException('不支持的文件格式：${extension.toUpperCase()}');
   }
 
   static ImportedBookData _parseEpub(Uint8List bytes, String fallbackTitle) {
@@ -149,21 +135,10 @@ abstract final class BookImporter {
       author: author?.isNotEmpty == true ? author! : '作者未知',
       coverBytes: coverBytes,
       chapters: chapters.isEmpty
-          ? const [Chapter(title: '正文', content: 'EPUB 已导入，但没有识别到可显示的正文。')]
+          ? (throw const FormatException('EPUB 中没有可阅读正文'))
           : chapters,
     );
   }
-
-  static ImportedBookData _fallback(
-    PickedLocalFile file,
-    String title,
-    String type,
-  ) => ImportedBookData(
-    title: title,
-    author: '本地导入',
-    coverBytes: file.coverBytes,
-    chapters: [Chapter(title: '正文', content: '已导入 $type 文件《$title》。')],
-  );
 
   static Uint8List? _readBytes(ArchiveFile? file) {
     if (file == null) return null;

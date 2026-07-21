@@ -4,6 +4,7 @@ import 'dart:io';
 import 'dart:isolate';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 import '../models/book.dart';
 
@@ -11,6 +12,7 @@ class BookReadingState {
   const BookReadingState({
     this.progress = 0,
     this.chapterIndex = 0,
+    this.chapterProgress = 0,
     this.lastReadAt,
     this.totalMinutes = 0,
     this.bookmarkedChapters = const <int>{},
@@ -19,6 +21,7 @@ class BookReadingState {
 
   final double progress;
   final int chapterIndex;
+  final double chapterProgress;
   final DateTime? lastReadAt;
   final int totalMinutes;
   final Set<int> bookmarkedChapters;
@@ -27,6 +30,7 @@ class BookReadingState {
   BookReadingState copyWith({
     double? progress,
     int? chapterIndex,
+    double? chapterProgress,
     DateTime? lastReadAt,
     int? totalMinutes,
     Set<int>? bookmarkedChapters,
@@ -34,6 +38,7 @@ class BookReadingState {
   }) => BookReadingState(
     progress: progress ?? this.progress,
     chapterIndex: chapterIndex ?? this.chapterIndex,
+    chapterProgress: chapterProgress ?? this.chapterProgress,
     lastReadAt: lastReadAt ?? this.lastReadAt,
     totalMinutes: totalMinutes ?? this.totalMinutes,
     bookmarkedChapters: bookmarkedChapters ?? this.bookmarkedChapters,
@@ -43,6 +48,7 @@ class BookReadingState {
   Map<String, Object?> toJson() => {
     'progress': progress,
     'chapterIndex': chapterIndex,
+    'chapterProgress': chapterProgress,
     'lastReadAt': lastReadAt?.toIso8601String(),
     'totalMinutes': totalMinutes,
     'bookmarkedChapters': bookmarkedChapters.toList(),
@@ -53,6 +59,7 @@ class BookReadingState {
       BookReadingState(
         progress: (json['progress'] as num?)?.toDouble() ?? 0,
         chapterIndex: (json['chapterIndex'] as num?)?.toInt() ?? 0,
+        chapterProgress: (json['chapterProgress'] as num?)?.toDouble() ?? 0,
         lastReadAt: DateTime.tryParse(json['lastReadAt'] as String? ?? ''),
         totalMinutes: (json['totalMinutes'] as num?)?.toInt() ?? 0,
         bookmarkedChapters:
@@ -164,21 +171,18 @@ class ReaderPreferences {
       );
 }
 
-/// Pure-Dart persistence keeps the app buildable without native preference
-/// plugins. The file lives in the app sandbox on Android and beside the
-/// process cache on desktop.
 class ReadingStore extends ChangeNotifier {
-  ReadingStore({File? storageFile})
-    : _storageFile =
-          storageFile ??
-          File(
-            '${Directory.systemTemp.parent.path}'
-            '${Platform.pathSeparator}reading_store_v2.json',
-          );
+  static const _storageChannel = MethodChannel('com.lyf.reading_app/storage');
+
+  ReadingStore({File? storageFile}) {
+    // Keep the public constructor parameter descriptive for tests and callers.
+    // ignore: prefer_initializing_formals
+    _storageFile = storageFile;
+  }
 
   ReadingStore.memory() : _storageFile = null;
 
-  final File? _storageFile;
+  File? _storageFile;
   final Map<String, BookReadingState> _states = {};
   final List<ReadingActivity> _activities = [];
   final List<Book> _importedBooks = [];
@@ -186,10 +190,32 @@ class ReadingStore extends ChangeNotifier {
   Timer? _saveTimer;
   bool _dirty = false;
   Future<void>? _saveInFlight;
+  String? storageError;
 
   List<Book> get importedBooks => List.unmodifiable(_importedBooks);
 
   Future<void> initialize() async {
+    if (_storageFile == null) {
+      String? directory;
+      try {
+        directory = await _storageChannel.invokeMethod<String>(
+          'getApplicationSupportPath',
+        );
+      } on MissingPluginException {
+        storageError = '当前平台不支持本地数据存储';
+        notifyListeners();
+        return;
+      }
+      if (directory == null || directory.isEmpty) {
+        storageError = '无法访问应用存储目录';
+        notifyListeners();
+        return;
+      }
+      _storageFile = File(
+        '$directory${Platform.pathSeparator}reading_store_v3.json',
+      );
+      await _migrateLegacyStoreIfNeeded(_storageFile!);
+    }
     await _readSavedData();
     notifyListeners();
   }
@@ -208,11 +234,17 @@ class ReadingStore extends ChangeNotifier {
     );
   }
 
-  void updateProgress(Book book, double progress, int chapterIndex) {
+  void updateProgress(
+    Book book,
+    double progress,
+    int chapterIndex, {
+    double chapterProgress = 0,
+  }) {
     final previous = stateFor(book);
     _states[book.id] = previous.copyWith(
       progress: progress.clamp(0, 1),
       chapterIndex: chapterIndex,
+      chapterProgress: chapterProgress.clamp(0, 1),
       lastReadAt: DateTime.now(),
     );
     _scheduleSave();
@@ -284,6 +316,21 @@ class ReadingStore extends ChangeNotifier {
     notifyListeners();
   }
 
+  bool containsImportedBook(Book book) =>
+      _importedBooks.any((item) => item.id == book.id);
+
+  void addImportedBookAsCopy(Book book) {
+    var suffix = 2;
+    var candidate = book;
+    while (containsImportedBook(candidate)) {
+      candidate = book.copyWith(title: '${book.title} ($suffix)');
+      suffix++;
+    }
+    _importedBooks.add(candidate);
+    _scheduleSave();
+    notifyListeners();
+  }
+
   void updateImportedBook(Book book) {
     final index = _importedBooks.indexWhere((item) => item.id == book.id);
     if (index < 0) return;
@@ -313,6 +360,7 @@ class ReadingStore extends ChangeNotifier {
   void removeImportedBook(Book book) {
     _importedBooks.removeWhere((item) => item.id == book.id);
     _states.remove(book.id);
+    _activities.removeWhere((activity) => activity.bookId == book.id);
     _scheduleSave();
     notifyListeners();
   }
@@ -366,12 +414,29 @@ class ReadingStore extends ChangeNotifier {
     return result;
   }
 
+  List<Book> sortByTitle(List<Book> books) {
+    final result = List<Book>.of(books);
+    result.sort(
+      (a, b) => a.title.toLowerCase().compareTo(b.title.toLowerCase()),
+    );
+    return result;
+  }
+
   Future<void> _readSavedData() async {
     final storageFile = _storageFile;
-    if (storageFile == null || !await storageFile.exists()) return;
+    if (storageFile == null) return;
+    final backupFile = File('${storageFile.path}.bak');
+    if (!await storageFile.exists() && !await backupFile.exists()) return;
     try {
-      final root = (jsonDecode(await storageFile.readAsString()) as Map)
-          .cast<String, Object?>();
+      Map<String, Object?> root;
+      try {
+        root = (jsonDecode(await storageFile.readAsString()) as Map)
+            .cast<String, Object?>();
+      } on Object {
+        root = (jsonDecode(await backupFile.readAsString()) as Map)
+            .cast<String, Object?>();
+        storageError = '主数据文件损坏，已从备份恢复';
+      }
       final states = (root['states'] as Map?)?.cast<String, Object?>() ?? {};
       for (final entry in states.entries) {
         _states[entry.key] = BookReadingState.fromJson(
@@ -395,10 +460,25 @@ class ReadingStore extends ChangeNotifier {
             .map((value) => Book.fromJson(value.cast<String, Object?>())),
       );
     } on Object {
-      // A corrupt or stale cache should never block the reader from opening.
       _states.clear();
       _activities.clear();
       _importedBooks.clear();
+      storageError = '阅读数据无法读取，原文件已保留';
+    }
+  }
+
+  Future<void> _migrateLegacyStoreIfNeeded(File storageFile) async {
+    if (await storageFile.exists()) return;
+    final legacyFile = File(
+      '${Directory.systemTemp.parent.path}'
+      '${Platform.pathSeparator}reading_store_v2.json',
+    );
+    if (!await legacyFile.exists()) return;
+    try {
+      await storageFile.parent.create(recursive: true);
+      await legacyFile.copy(storageFile.path);
+    } on FileSystemException {
+      storageError = '旧版本阅读数据迁移失败，原数据未被删除';
     }
   }
 
@@ -435,6 +515,7 @@ class ReadingStore extends ChangeNotifier {
     try {
       _dirty = false;
       final payload = {
+        'schemaVersion': 3,
         'states': _states.map((key, value) => MapEntry(key, value.toJson())),
         'activity': _activities.map((value) => value.toJson()).toList(),
         'preferences': readerPreferences.toJson(),
@@ -442,10 +523,19 @@ class ReadingStore extends ChangeNotifier {
       };
       final encoded = await Isolate.run(() => jsonEncode(payload));
       await storageFile.parent.create(recursive: true);
-      await storageFile.writeAsString(encoded, flush: true);
-    } on FileSystemException {
-      // Keep the in-memory session usable if storage is temporarily unavailable.
+      final temporaryFile = File('${storageFile.path}.tmp');
+      final backupFile = File('${storageFile.path}.bak');
+      await temporaryFile.writeAsString(encoded, flush: true);
+      if (await storageFile.exists()) {
+        if (await backupFile.exists()) await backupFile.delete();
+        await storageFile.rename(backupFile.path);
+      }
+      await temporaryFile.rename(storageFile.path);
+      storageError = null;
+    } on FileSystemException catch (error) {
       _dirty = true;
+      storageError = '保存失败：${error.osError?.message ?? '请检查存储空间'}';
+      notifyListeners();
     }
   }
 

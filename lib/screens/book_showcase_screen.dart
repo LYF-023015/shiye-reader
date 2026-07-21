@@ -129,6 +129,40 @@ class _ShowcaseToolbar extends StatelessWidget {
                 title: const Text('书籍信息'),
                 subtitle: Text('${book.author} · ${book.chapters.length} 章'),
               ),
+              const Divider(),
+              ListTile(
+                leading: const Icon(
+                  Icons.delete_outline_rounded,
+                  color: Colors.red,
+                ),
+                title: const Text('从书架删除', style: TextStyle(color: Colors.red)),
+                onTap: () async {
+                  final confirmed = await showDialog<bool>(
+                    context: sheetContext,
+                    builder: (context) => AlertDialog(
+                      title: const Text('删除这本书？'),
+                      content: Text('《${book.title}》及其阅读进度、书签和批注将被删除。'),
+                      actions: [
+                        TextButton(
+                          onPressed: () => Navigator.pop(context, false),
+                          child: const Text('取消'),
+                        ),
+                        FilledButton(
+                          style: FilledButton.styleFrom(
+                            backgroundColor: Colors.red,
+                          ),
+                          onPressed: () => Navigator.pop(context, true),
+                          child: const Text('删除'),
+                        ),
+                      ],
+                    ),
+                  );
+                  if (confirmed != true) return;
+                  readingStore.removeImportedBook(book);
+                  if (sheetContext.mounted) Navigator.pop(sheetContext);
+                  if (context.mounted) Navigator.pop(context);
+                },
+              ),
             ],
           ),
         ),

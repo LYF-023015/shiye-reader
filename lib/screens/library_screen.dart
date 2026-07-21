@@ -41,9 +41,11 @@ class _LibraryScreenState extends State<LibraryScreen>
   late final AnimationController _motionController;
   late int _currentIndex;
   String _query = '';
+  _ShelfSort _sort = _ShelfSort.recent;
   String _coverWarmupSignature = '';
   bool _coversReady = true;
   int _coverWarmupGeneration = 0;
+  bool _isImporting = false;
 
   @override
   void initState() {
@@ -124,7 +126,14 @@ class _LibraryScreenState extends State<LibraryScreen>
       final haystack = '${book.title}${book.author}'.toLowerCase();
       return haystack.contains(_query.trim().toLowerCase());
     }).toList();
-    return matching;
+    switch (_sort) {
+      case _ShelfSort.recent:
+        return widget.readingStore.sortByRecent(matching);
+      case _ShelfSort.title:
+        return widget.readingStore.sortByTitle(matching);
+      case _ShelfSort.imported:
+        return matching;
+    }
   }
 
   void _onSearchChanged(String value) {
@@ -271,6 +280,7 @@ class _LibraryScreenState extends State<LibraryScreen>
   }
 
   Future<void> _importLocalBook({required bool coverImage}) async {
+    if (_isImporting) return;
     PickedLocalFile? file;
     try {
       file = await LocalFilePicker.pick(coverImage: coverImage);
@@ -294,58 +304,118 @@ class _LibraryScreenState extends State<LibraryScreen>
       return;
     }
 
-    final imported = coverImage
-        ? ImportedBookData(
-            title: file.name.replaceFirst(RegExp(r'\.[^.]+$'), ''),
-            author: '本地导入',
-            coverBytes: bytes,
-            chapters: const [Chapter(title: '正文', content: '请从书籍文件导入正文。')],
-          )
-        : await BookImporter.parse(file);
-    final title = imported.title.trim().isEmpty
-        ? '未命名书籍'
-        : imported.title.trim();
-    final actualCover = imported.coverBytes == null
-        ? null
-        : await CoverPaletteExtractor.normalize(imported.coverBytes!);
-    final palette = actualCover == null
-        ? CoverPaletteExtractor.fromText(title)
-        : await CoverPaletteExtractor.fromBytes(
-            actualCover,
-            fallbackSeed: title,
-          );
-    if (!mounted) return;
+    setState(() => _isImporting = true);
+    try {
+      final imported = coverImage
+          ? ImportedBookData(
+              title: file.name.replaceFirst(RegExp(r'\.[^.]+$'), ''),
+              author: '本地导入',
+              coverBytes: bytes,
+              chapters: const [Chapter(title: '正文', content: '请从书籍文件导入正文。')],
+            )
+          : await BookImporter.parse(file);
+      final title = imported.title.trim().isEmpty
+          ? '未命名书籍'
+          : imported.title.trim();
+      final actualCover = imported.coverBytes == null
+          ? null
+          : await CoverPaletteExtractor.normalize(imported.coverBytes!);
+      final palette = actualCover == null
+          ? CoverPaletteExtractor.fromText(title)
+          : await CoverPaletteExtractor.fromBytes(
+              actualCover,
+              fallbackSeed: title,
+            );
+      if (!mounted) return;
 
-    final seed = title.codeUnits.fold<int>(0, (value, unit) => value + unit);
-    final styles = BookBindingStyle.values;
-    final book = Book(
-      title: title,
-      author: imported.author,
-      lastRead: '刚刚导入',
-      progress: 0,
-      palette: palette,
-      coverMark: title,
-      coverBytes: actualCover,
-      overlayCoverText: actualCover == null || coverImage,
-      coverTemplate: seed % 20,
-      bindingStyle: styles[seed % styles.length],
-      chapters: imported.chapters,
-    );
+      final seed = title.codeUnits.fold<int>(0, (value, unit) => value + unit);
+      final styles = BookBindingStyle.values;
+      final book = Book(
+        title: title,
+        author: imported.author,
+        lastRead: '刚刚导入',
+        progress: 0,
+        palette: palette,
+        coverMark: title,
+        coverBytes: actualCover,
+        overlayCoverText: actualCover == null || coverImage,
+        coverTemplate: seed % 20,
+        bindingStyle: styles[seed % styles.length],
+        chapters: imported.chapters,
+      );
 
-    final targetIndex = widget.books.length;
-    widget.onBookImported?.call(book);
-    _searchController.clear();
-    setState(() {
-      _query = '';
-      _currentIndex = targetIndex;
-    });
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      _motionController.stop();
-      _motionController.value = targetIndex.toDouble();
-    });
-    ScaffoldMessenger.of(
-      context,
-    ).showSnackBar(SnackBar(content: Text('已生成《${book.title}》的专属封面卡片')));
+      var bookToAdd = book;
+      if (widget.readingStore.containsImportedBook(book)) {
+        final action = await showDialog<_DuplicateAction>(
+          context: context,
+          builder: (context) => AlertDialog(
+            title: const Text('发现同名书籍'),
+            content: Text('《${book.title}》已在书架中。'),
+            actions: [
+              TextButton(
+                onPressed: () =>
+                    Navigator.pop(context, _DuplicateAction.cancel),
+                child: const Text('取消'),
+              ),
+              TextButton(
+                onPressed: () =>
+                    Navigator.pop(context, _DuplicateAction.keepBoth),
+                child: const Text('保留两本'),
+              ),
+              FilledButton(
+                onPressed: () =>
+                    Navigator.pop(context, _DuplicateAction.replace),
+                child: const Text('替换'),
+              ),
+            ],
+          ),
+        );
+        if (!mounted || action == null || action == _DuplicateAction.cancel) {
+          return;
+        }
+        if (action == _DuplicateAction.keepBoth) {
+          var copyNumber = 2;
+          while (widget.readingStore.containsImportedBook(bookToAdd)) {
+            bookToAdd = book.copyWith(title: '${book.title} ($copyNumber++)');
+          }
+        }
+      }
+      final existingIndex = widget.books.indexWhere(
+        (item) => item.id == bookToAdd.id,
+      );
+      final targetIndex = existingIndex < 0
+          ? widget.books.length
+          : existingIndex;
+      widget.onBookImported?.call(bookToAdd);
+      _searchController.clear();
+      setState(() {
+        _query = '';
+        _currentIndex = targetIndex;
+      });
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        _motionController.stop();
+        _motionController.value = targetIndex.toDouble();
+      });
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('已添加《${bookToAdd.title}》到书架')));
+    } on FormatException catch (error) {
+      if (mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text(error.message)));
+      }
+    } on Object {
+      if (mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(const SnackBar(content: Text('导入失败，请确认文件完整后重试')));
+      }
+    } finally {
+      if (mounted) {
+        setState(() => _isImporting = false);
+      }
+    }
   }
 
   Future<void> _changeCover(Book book) async {
@@ -404,14 +474,14 @@ class _LibraryScreenState extends State<LibraryScreen>
             ),
             const SizedBox(height: 8),
             const Text(
-              '导入本地 EPUB、TXT 或 PDF，封面与色彩会自动融入浮光书架。',
+              '导入本地 EPUB 或 TXT，封面与色彩会自动融入浮光书架。',
               style: TextStyle(color: Colors.white54, height: 1.5),
             ),
             const SizedBox(height: 20),
             _ImportOption(
               icon: Icons.folder_open_rounded,
               title: '从本地文件导入',
-              subtitle: '支持 EPUB、TXT 和 PDF，并自动生成封面卡片',
+              subtitle: '支持 EPUB 和 TXT，并自动生成封面卡片',
               onTap: () async {
                 Navigator.pop(context);
                 await Future<void>.delayed(const Duration(milliseconds: 180));
@@ -430,6 +500,31 @@ class _LibraryScreenState extends State<LibraryScreen>
               },
             ),
           ],
+        ),
+      ),
+    );
+  }
+
+  void _showSortMenu() {
+    showModalBottomSheet<void>(
+      context: context,
+      builder: (context) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: _ShelfSort.values
+              .map(
+                (sort) => ListTile(
+                  title: Text(sort.label),
+                  trailing: _sort == sort
+                      ? const Icon(Icons.check_rounded)
+                      : null,
+                  onTap: () {
+                    setState(() => _sort = sort);
+                    Navigator.pop(context);
+                  },
+                ),
+              )
+              .toList(),
         ),
       ),
     );
@@ -460,6 +555,7 @@ class _LibraryScreenState extends State<LibraryScreen>
                 },
                 hasQuery: _query.isNotEmpty,
                 onAdd: _showImportSheet,
+                onSort: _showSortMenu,
                 onEditCover: books.isEmpty
                     ? null
                     : () => _changeCover(books[safeIndex]),
@@ -585,9 +681,27 @@ class _LibraryScreenState extends State<LibraryScreen>
             ],
           ),
         ),
+        if (_isImporting)
+          const Positioned.fill(
+            child: ColoredBox(
+              color: Color(0x99000000),
+              child: Center(child: CircularProgressIndicator()),
+            ),
+          ),
       ],
     );
   }
+}
+
+enum _DuplicateAction { replace, keepBoth, cancel }
+
+enum _ShelfSort {
+  recent('最近阅读'),
+  imported('最近导入'),
+  title('书名排序');
+
+  const _ShelfSort(this.label);
+  final String label;
 }
 
 class _LibraryToolbar extends StatelessWidget {
@@ -597,6 +711,7 @@ class _LibraryToolbar extends StatelessWidget {
     required this.onClear,
     required this.hasQuery,
     required this.onAdd,
+    required this.onSort,
     required this.onEditCover,
   });
 
@@ -605,6 +720,7 @@ class _LibraryToolbar extends StatelessWidget {
   final VoidCallback onClear;
   final bool hasQuery;
   final VoidCallback onAdd;
+  final VoidCallback onSort;
   final VoidCallback? onEditCover;
 
   @override
@@ -638,7 +754,7 @@ class _LibraryToolbar extends StatelessWidget {
           ),
           const Spacer(),
           SizedBox(
-            width: math.min(142, MediaQuery.sizeOf(context).width * .29),
+            width: math.min(100, MediaQuery.sizeOf(context).width * .24),
             height: 42,
             child: TextField(
               key: const ValueKey('library-search'),
@@ -682,6 +798,16 @@ class _LibraryToolbar extends StatelessWidget {
               ),
             ),
           ),
+          IconButton(
+            tooltip: '书架排序',
+            onPressed: onSort,
+            style: IconButton.styleFrom(
+              foregroundColor: Colors.white,
+              backgroundColor: Colors.white.withValues(alpha: .08),
+            ),
+            icon: const Icon(Icons.sort_rounded, size: 20),
+          ),
+          const SizedBox(width: 4),
           IconButton(
             key: const ValueKey('add-book-button'),
             tooltip: '导入书籍',

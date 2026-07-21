@@ -54,6 +54,37 @@ void main() {
     restored.dispose();
   });
 
+  test('章节内阅读位置会持久化', () async {
+    final file = File(
+      '${Directory.systemTemp.path}'
+      '${Platform.pathSeparator}reading-position-${DateTime.now().microsecondsSinceEpoch}.json',
+    );
+    addTearDown(() async {
+      for (final suffix in ['', '.bak', '.tmp']) {
+        final candidate = File('${file.path}$suffix');
+        if (await candidate.exists()) await candidate.delete();
+      }
+    });
+    const book = Book(
+      title: '位置测试',
+      author: '作者',
+      lastRead: '尚未阅读',
+      progress: 0,
+      palette: [Color(0xFF7890A0), Color(0xFFDDE5E8), Color(0xFF24333A)],
+      coverMark: '位置测试',
+      chapters: [Chapter(title: '第一章', content: '正文')],
+    );
+    final store = ReadingStore(storageFile: file);
+    await store.initialize();
+    store.updateProgress(book, .42, 0, chapterProgress: .73);
+    await store.flush();
+    final restored = ReadingStore(storageFile: file);
+    await restored.initialize();
+    expect(restored.stateFor(book).chapterProgress, .73);
+    store.dispose();
+    restored.dispose();
+  });
+
   test('重新导入会替换旧版乱码解析产生的同一本书', () {
     final store = ReadingStore.memory();
     const palette = [Color(0xFF7890A0), Color(0xFFDDE5E8), Color(0xFF24333A)];

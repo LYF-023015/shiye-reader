@@ -30,6 +30,7 @@ class _ReaderScreenState extends State<ReaderScreen> {
   bool _showControls = true;
   late String _pageTurn;
   late double _liveProgress;
+  late double _restoreChapterProgress;
   final ScrollController _scrollController = ScrollController();
   final DateTime _openedAt = DateTime.now();
   Timer? _progressTimer;
@@ -56,19 +57,15 @@ class _ReaderScreenState extends State<ReaderScreen> {
     _eyeCare = preferences.eyeCare;
     _pageTurn = preferences.pageTurn;
     _liveProgress = state.progress;
+    _restoreChapterProgress = state.chapterProgress;
     _scrollController.addListener(_queueProgressUpdate);
     WidgetsBinding.instance.addPostFrameCallback((_) => _restorePosition());
   }
 
   void _restorePosition() {
     if (!_scrollController.hasClients || widget.book.chapters.isEmpty) return;
-    final withinChapter =
-        (_liveProgress * widget.book.chapters.length - _chapterIndex).clamp(
-          0.0,
-          1.0,
-        );
     _scrollController.jumpTo(
-      _scrollController.position.maxScrollExtent * withinChapter,
+      _scrollController.position.maxScrollExtent * _restoreChapterProgress,
     );
   }
 
@@ -86,7 +83,12 @@ class _ReaderScreenState extends State<ReaderScreen> {
     final overall = ((_chapterIndex + local) / widget.book.chapters.length)
         .clamp(0.0, 1.0);
     if (rebuild && mounted) setState(() => _liveProgress = overall);
-    widget.readingStore.updateProgress(widget.book, overall, _chapterIndex);
+    widget.readingStore.updateProgress(
+      widget.book,
+      overall,
+      _chapterIndex,
+      chapterProgress: local,
+    );
   }
 
   void _selectChapter(int index) {
@@ -99,6 +101,7 @@ class _ReaderScreenState extends State<ReaderScreen> {
       widget.book,
       _liveProgress,
       _chapterIndex,
+      chapterProgress: 0,
     );
   }
 
@@ -435,6 +438,9 @@ class _ReaderScreenState extends State<ReaderScreen> {
 
   @override
   Widget build(BuildContext context) {
+    if (widget.book.chapters.isEmpty) {
+      return const Scaffold(body: Center(child: Text('这本书没有可阅读的正文')));
+    }
     final chapterProgress = _liveProgress;
 
     return Scaffold(

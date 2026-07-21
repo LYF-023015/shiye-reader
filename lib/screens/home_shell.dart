@@ -47,15 +47,31 @@ class _HomeShellState extends State<HomeShell> {
           value: SystemUiOverlayStyle.light,
           child: Scaffold(
             backgroundColor: const Color(0xFF08090B),
-            body: IndexedStack(
-              index: _currentIndex,
+            body: Column(
               children: [
-                LibraryScreen(
-                  books: books,
-                  readingStore: _readingStore,
-                  onBookImported: _addImportedBook,
+                if (_readingStore.storageError != null)
+                  MaterialBanner(
+                    content: Text(_readingStore.storageError!),
+                    actions: [
+                      TextButton(
+                        onPressed: _readingStore.initialize,
+                        child: const Text('重试'),
+                      ),
+                    ],
+                  ),
+                Expanded(
+                  child: IndexedStack(
+                    index: _currentIndex,
+                    children: [
+                      LibraryScreen(
+                        books: books,
+                        readingStore: _readingStore,
+                        onBookImported: _addImportedBook,
+                      ),
+                      HistoryScreen(books: books, readingStore: _readingStore),
+                    ],
+                  ),
                 ),
-                HistoryScreen(books: books, readingStore: _readingStore),
               ],
             ),
             bottomNavigationBar: SafeArea(
