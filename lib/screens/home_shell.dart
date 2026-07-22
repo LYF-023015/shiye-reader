@@ -326,7 +326,7 @@ class _HomeShellState extends State<HomeShell> with WidgetsBindingObserver {
                     content: Text(_readingStore.storageError!),
                     actions: [
                       TextButton(
-                        onPressed: _initialize,
+                        onPressed: _readingStore.flush,
                         child: const Text('重试'),
                       ),
                     ],
@@ -419,39 +419,80 @@ class _NavigationItem extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final selectedColor = Theme.of(context).colorScheme.primary;
-    final unselectedColor = Theme.of(
-      context,
-    ).colorScheme.onSurface.withValues(alpha: .5);
+    final colors = Theme.of(context).colorScheme;
+    final selectedColor = colors.primary;
+    final unselectedColor = colors.onSurface.withValues(alpha: .5);
     final color = selected ? selectedColor : unselectedColor;
     return Expanded(
-      child: Material(
-        color: selected
-            ? Theme.of(context).colorScheme.primary.withValues(alpha: .12)
-            : Colors.transparent,
-        borderRadius: BorderRadius.circular(25),
-        child: InkWell(
-          key: ValueKey('nav-$label'),
-          onTap: onTap,
-          borderRadius: BorderRadius.circular(25),
-          child: Row(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              Icon(icon, size: 20, color: color),
-              const SizedBox(width: 5),
-              Flexible(
-                child: Text(
-                  label,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: TextStyle(
-                    fontSize: 13,
-                    fontWeight: selected ? FontWeight.w600 : FontWeight.w400,
-                    color: color,
-                  ),
+      child: SizedBox.expand(
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 2),
+          child: AnimatedContainer(
+            key: ValueKey('nav-background-$label'),
+            duration: const Duration(milliseconds: 220),
+            curve: Curves.easeOutCubic,
+            decoration: BoxDecoration(
+              color: selected
+                  ? colors.primaryContainer.withValues(alpha: .72)
+                  : Colors.transparent,
+              borderRadius: BorderRadius.circular(18),
+              border: Border.all(
+                color: selected
+                    ? colors.primary.withValues(alpha: .18)
+                    : Colors.transparent,
+              ),
+              boxShadow: selected
+                  ? [
+                      BoxShadow(
+                        color: colors.primary.withValues(alpha: .1),
+                        blurRadius: 10,
+                        offset: const Offset(0, 3),
+                      ),
+                    ]
+                  : null,
+            ),
+            child: Material(
+              color: Colors.transparent,
+              borderRadius: BorderRadius.circular(18),
+              child: InkWell(
+                key: ValueKey('nav-$label'),
+                onTap: onTap,
+                borderRadius: BorderRadius.circular(18),
+                child: Row(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    AnimatedContainer(
+                      duration: const Duration(milliseconds: 220),
+                      width: 30,
+                      height: 30,
+                      alignment: Alignment.center,
+                      decoration: BoxDecoration(
+                        color: selected
+                            ? colors.primary.withValues(alpha: .1)
+                            : Colors.transparent,
+                        shape: BoxShape.circle,
+                      ),
+                      child: Icon(icon, size: 20, color: color),
+                    ),
+                    const SizedBox(width: 4),
+                    Flexible(
+                      child: Text(
+                        label,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(
+                          fontSize: 13,
+                          fontWeight: selected
+                              ? FontWeight.w700
+                              : FontWeight.w400,
+                          color: color,
+                        ),
+                      ),
+                    ),
+                  ],
                 ),
               ),
-            ],
+            ),
           ),
         ),
       ),

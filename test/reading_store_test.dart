@@ -277,4 +277,32 @@ void main() {
     expect(restored.stateFor(book).progress, .8);
     restored.dispose();
   });
+
+  test('自动备份编码不会捕获 SQLite 连接', () async {
+    final directory = await Directory.systemTemp.createTemp('shiye-auto-');
+    final file = File('${directory.path}${Platform.pathSeparator}store.json');
+    addTearDown(() => directory.delete(recursive: true));
+    const book = Book(
+      storageId: 'automatic-backup-book',
+      title: '自动备份测试',
+      author: '作者',
+      lastRead: '尚未阅读',
+      progress: 0,
+      palette: [Color(0xFF7890A0), Color(0xFFDDE5E8), Color(0xFF24333A)],
+      coverMark: '自动备份',
+      chapters: [Chapter(title: '第一章', content: '自动备份正文')],
+    );
+    final store = ReadingStore(storageFile: file, automaticBackups: true);
+    await store.initialize();
+    store.addImportedBook(book);
+
+    await store.flush();
+
+    expect(store.storageError, isNull);
+    final backups = await Directory(
+      '${directory.path}${Platform.pathSeparator}automatic_backups',
+    ).list().where((entry) => entry.path.endsWith('.zip')).toList();
+    expect(backups, hasLength(1));
+    store.dispose();
+  });
 }

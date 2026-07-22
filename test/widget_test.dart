@@ -85,6 +85,10 @@ void main() {
     expect(find.byKey(const ValueKey('empty-import-button')), findsOneWidget);
     await tester.tap(find.byKey(const ValueKey('nav-阅读记录')));
     await tester.pumpAndSettle();
+    expect(
+      tester.getSize(find.byKey(const ValueKey('nav-background-阅读记录'))).height,
+      greaterThanOrEqualTo(44),
+    );
     expect(find.byKey(const ValueKey('reading-heatmap')), findsOneWidget);
     expect(find.text('0'), findsWidgets);
   });

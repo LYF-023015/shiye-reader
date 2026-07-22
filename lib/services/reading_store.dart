@@ -6,8 +6,10 @@ import 'package:archive/archive.dart';
 import 'package:crypto/crypto.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:sqflite/sqflite.dart' show DatabaseException;
 
 import '../models/book.dart';
+import 'diagnostics_service.dart';
 import 'reading_database.dart';
 
 class BookReadingState {
@@ -268,8 +270,8 @@ class ReaderPreferences {
 class ReadingStore extends ChangeNotifier {
   static const _storageChannel = MethodChannel('com.lyf.reading_app/storage');
 
-  ReadingStore({File? storageFile, File? databaseFile})
-    : _automaticBackups = storageFile == null,
+  ReadingStore({File? storageFile, File? databaseFile, bool? automaticBackups})
+    : _automaticBackups = automaticBackups ?? storageFile == null,
       _databasePath = databaseFile?.path {
     // Keep the public constructor parameter descriptive for tests and callers.
     // ignore: prefer_initializing_formals
@@ -1174,12 +1176,17 @@ class ReadingStore extends ChangeNotifier {
       if (_automaticBackups) {
         await _writeAutomaticBackupIfDue(storageFile.parent);
       }
+      final hadStorageError = storageError != null;
       storageError = null;
-    } on Object catch (error) {
+      if (hadStorageError) notifyListeners();
+    } on Object catch (error, stackTrace) {
       _dirty = true;
-      storageError = error is FileSystemException
-          ? '保存失败：${error.osError?.message ?? '请检查存储空间'}'
-          : '保存失败：正文数据库写入异常';
+      storageError = switch (error) {
+        FileSystemException() => '保存失败：${error.osError?.message ?? '请检查存储空间'}',
+        DatabaseException() => '保存失败：正文数据库暂时无法写入',
+        _ => '保存失败：自动备份未能完成',
+      };
+      unawaited(DiagnosticsService.record(error, stackTrace));
       notifyListeners();
     }
   }
@@ -1206,7 +1213,11 @@ class ReadingStore extends ChangeNotifier {
     final target = File(
       '${backupDirectory.path}${Platform.pathSeparator}Shiye-auto-$day.zip',
     );
-    final bytes = await Isolate.run(() => _encodeBackupPayload(_payload()));
+    // Build the sendable snapshot before entering the isolate. Calling
+    // `_payload()` inside the closure captures this store and its SQLite
+    // connection, which cannot be sent across isolates.
+    final payload = _payload();
+    final bytes = await Isolate.run(() => _encodeBackupPayload(payload));
     await target.writeAsBytes(bytes, flush: true);
     for (final obsolete in existing.skip(2)) {
       await obsolete.delete();
