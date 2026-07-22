@@ -1,0 +1,4 @@
+storeFile=shiye-release.jks
+storePassword=replace-me
+keyAlias=shiye
+keyPassword=replace-me

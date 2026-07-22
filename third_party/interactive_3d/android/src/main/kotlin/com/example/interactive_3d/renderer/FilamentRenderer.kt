@@ -112,13 +112,9 @@ class FilamentRenderer(
 
         scene?.skybox = null
 
-        // Post-processing disabled — color output goes straight to the surface.
-        // MSAA still works at hardware level without the post-processing pipeline.
+        // Keep post-processing enabled for color grading. MSAA is configured by
+        // configureView() from the detected device tier.
         filamentView?.isPostProcessingEnabled = true
-        filamentView?.multiSampleAntiAliasingOptions = filamentView!!.multiSampleAntiAliasingOptions.apply {
-            enabled = true
-            sampleCount = 4
-        }
 
         // Linear tone mapping avoids washed-out colors in the Texture API path
         filamentView?.colorGrading = ColorGrading.Builder()

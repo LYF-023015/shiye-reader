@@ -7,13 +7,19 @@ import 'package:flutter/services.dart';
 import '../models/book.dart';
 import '../services/book_importer.dart';
 import '../services/cover_palette_extractor.dart';
+import '../services/document_service.dart';
 import '../services/local_file_picker.dart';
 import '../services/reading_store.dart';
 import '../widgets/book_cover.dart';
 import '../widgets/book_hero.dart';
 import 'book_showcase_screen.dart';
 
-const double _shelfItemExtent = 118;
+const double _shelfItemExtent = 150;
+
+Color _onSurface(BuildContext context) =>
+    Theme.of(context).colorScheme.onSurface;
+Color _onSurfaceSubdued(BuildContext context, {double alpha = .54}) =>
+    Theme.of(context).colorScheme.onSurface.withValues(alpha: alpha);
 
 class LibraryScreen extends StatefulWidget {
   const LibraryScreen({
@@ -42,6 +48,9 @@ class _LibraryScreenState extends State<LibraryScreen>
   late int _currentIndex;
   String _query = '';
   _ShelfSort _sort = _ShelfSort.recent;
+  _ShelfFilter _filter = _ShelfFilter.all;
+  _ShelfViewMode _viewMode = _ShelfViewMode.coverFlow;
+  final Set<String> _selectedBookIds = {};
   String _coverWarmupSignature = '';
   bool _coversReady = true;
   int _coverWarmupGeneration = 0;
@@ -124,7 +133,16 @@ class _LibraryScreenState extends State<LibraryScreen>
   List<Book> _visibleBooks() {
     final matching = widget.books.where((book) {
       final haystack = '${book.title}${book.author}'.toLowerCase();
-      return haystack.contains(_query.trim().toLowerCase());
+      if (!haystack.contains(_query.trim().toLowerCase())) return false;
+      final progress = widget.readingStore.stateFor(book).progress;
+      return switch (_filter) {
+        _ShelfFilter.all => true,
+        _ShelfFilter.unread => progress <= 0,
+        _ShelfFilter.reading => progress > 0 && progress < .99,
+        _ShelfFilter.finished => progress >= .99,
+        _ShelfFilter.annotated =>
+          widget.readingStore.stateFor(book).annotations.isNotEmpty,
+      };
     }).toList();
     switch (_sort) {
       case _ShelfSort.recent:
@@ -132,6 +150,27 @@ class _LibraryScreenState extends State<LibraryScreen>
       case _ShelfSort.title:
         return widget.readingStore.sortByTitle(matching);
       case _ShelfSort.imported:
+        matching.sort(
+          (a, b) => (b.importedAt ?? DateTime(2000)).compareTo(
+            a.importedAt ?? DateTime(2000),
+          ),
+        );
+        return matching;
+      case _ShelfSort.author:
+        matching.sort(
+          (a, b) => a.author.toLowerCase().compareTo(b.author.toLowerCase()),
+        );
+        return matching;
+      case _ShelfSort.progress:
+        matching.sort(
+          (a, b) => widget.readingStore
+              .stateFor(b)
+              .progress
+              .compareTo(widget.readingStore.stateFor(a).progress),
+        );
+        return matching;
+      case _ShelfSort.fileSize:
+        matching.sort((a, b) => b.fileSize.compareTo(a.fileSize));
         return matching;
     }
   }
@@ -310,6 +349,7 @@ class _LibraryScreenState extends State<LibraryScreen>
           ? ImportedBookData(
               title: file.name.replaceFirst(RegExp(r'\.[^.]+$'), ''),
               author: '本地导入',
+              format: BookFormat.txt,
               coverBytes: bytes,
               chapters: const [Chapter(title: '正文', content: '请从书籍文件导入正文。')],
             )
@@ -331,6 +371,7 @@ class _LibraryScreenState extends State<LibraryScreen>
       final seed = title.codeUnits.fold<int>(0, (value, unit) => value + unit);
       final styles = BookBindingStyle.values;
       final book = Book(
+        storageId: '${DateTime.now().microsecondsSinceEpoch}-$seed',
         title: title,
         author: imported.author,
         lastRead: '刚刚导入',
@@ -342,6 +383,11 @@ class _LibraryScreenState extends State<LibraryScreen>
         coverTemplate: seed % 20,
         bindingStyle: styles[seed % styles.length],
         chapters: imported.chapters,
+        format: imported.format,
+        importedAt: DateTime.now(),
+        fileSize: bytes.lengthInBytes,
+        navigation: imported.navigation,
+        sourceBytes: imported.sourceBytes,
       );
 
       var bookToAdd = book;
@@ -449,11 +495,158 @@ class _LibraryScreenState extends State<LibraryScreen>
     ).showSnackBar(SnackBar(content: Text('《${book.title}》的封面已更新')));
   }
 
+  Future<void> _editMetadata(Book book) async {
+    final titleController = TextEditingController(text: book.title);
+    final authorController = TextEditingController(text: book.author);
+    final formKey = GlobalKey<FormState>();
+    final updated = await showDialog<({String title, String author})>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('编辑书籍信息'),
+        content: Form(
+          key: formKey,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              TextFormField(
+                controller: titleController,
+                autofocus: true,
+                validator: (value) =>
+                    value?.trim().isEmpty == true ? '书名不能为空' : null,
+                decoration: const InputDecoration(labelText: '书名'),
+              ),
+              const SizedBox(height: 12),
+              TextField(
+                controller: authorController,
+                decoration: const InputDecoration(labelText: '作者'),
+              ),
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            onPressed: () {
+              if (formKey.currentState?.validate() != true) return;
+              final title = titleController.text.trim();
+              Navigator.pop(context, (
+                title: title,
+                author: authorController.text.trim().isEmpty
+                    ? '作者未知'
+                    : authorController.text.trim(),
+              ));
+            },
+            child: const Text('保存'),
+          ),
+        ],
+      ),
+    );
+    titleController.dispose();
+    authorController.dispose();
+    if (updated == null) return;
+    widget.readingStore.replaceImportedBook(
+      book,
+      book.copyWith(
+        title: updated.title,
+        author: updated.author,
+        coverMark: book.coverMark == book.title
+            ? updated.title
+            : book.coverMark,
+      ),
+    );
+  }
+
+  Future<void> _showBookActions(Book book) async {
+    final action = await showModalBottomSheet<String>(
+      context: context,
+      showDragHandle: true,
+      builder: (context) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            ListTile(
+              leading: const Icon(Icons.edit_outlined),
+              title: const Text('编辑书名与作者'),
+              onTap: () => Navigator.pop(context, 'metadata'),
+            ),
+            ListTile(
+              leading: const Icon(Icons.photo_camera_back_outlined),
+              title: const Text('更换封面'),
+              onTap: () => Navigator.pop(context, 'cover'),
+            ),
+          ],
+        ),
+      ),
+    );
+    if (!mounted) return;
+    if (action == 'metadata') await _editMetadata(book);
+    if (action == 'cover') await _changeCover(book);
+  }
+
+  void _toggleSelected(Book book) {
+    setState(() {
+      _selectedBookIds.contains(book.id)
+          ? _selectedBookIds.remove(book.id)
+          : _selectedBookIds.add(book.id);
+    });
+  }
+
+  Future<void> _deleteSelected() async {
+    final books = widget.books
+        .where((book) => _selectedBookIds.contains(book.id))
+        .toList();
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Text('删除 ${books.length} 本书？'),
+        content: const Text('对应阅读进度、书签、批注和记录也会删除。'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            style: FilledButton.styleFrom(backgroundColor: Colors.red),
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('删除'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true) return;
+    widget.readingStore.removeImportedBooks(books);
+    if (mounted) setState(_selectedBookIds.clear);
+  }
+
+  Future<void> _exportSelected() async {
+    final ids = Set<String>.of(_selectedBookIds);
+    try {
+      final saved = await DocumentService.saveBytes(
+        name: 'Shiye-selected-backup.zip',
+        content: await widget.readingStore.createBackupArchive(bookIds: ids),
+        mimeType: 'application/zip',
+      );
+      if (saved && mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('已导出 ${ids.length} 本书的备份')));
+      }
+    } on Object {
+      if (mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(const SnackBar(content: Text('所选书籍导出失败')));
+      }
+    }
+  }
+
   void _showImportSheet() {
     showModalBottomSheet<void>(
       context: context,
       useSafeArea: true,
-      backgroundColor: const Color(0xFF17191E),
       showDragHandle: true,
       shape: const RoundedRectangleBorder(
         borderRadius: BorderRadius.vertical(top: Radius.circular(28)),
@@ -464,18 +657,18 @@ class _LibraryScreenState extends State<LibraryScreen>
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            const Text(
+            Text(
               '添加到书架',
               style: TextStyle(
-                color: Colors.white,
+                color: Theme.of(context).colorScheme.onSurface,
                 fontSize: 21,
                 fontWeight: FontWeight.w700,
               ),
             ),
             const SizedBox(height: 8),
-            const Text(
+            Text(
               '导入本地 EPUB 或 TXT，封面与色彩会自动融入浮光书架。',
-              style: TextStyle(color: Colors.white54, height: 1.5),
+              style: TextStyle(color: _onSurfaceSubdued(context), height: 1.5),
             ),
             const SizedBox(height: 20),
             _ImportOption(
@@ -508,25 +701,193 @@ class _LibraryScreenState extends State<LibraryScreen>
   void _showSortMenu() {
     showModalBottomSheet<void>(
       context: context,
-      builder: (context) => SafeArea(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: _ShelfSort.values
-              .map(
-                (sort) => ListTile(
-                  title: Text(sort.label),
-                  trailing: _sort == sort
-                      ? const Icon(Icons.check_rounded)
-                      : null,
-                  onTap: () {
-                    setState(() => _sort = sort);
-                    Navigator.pop(context);
+      builder: (context) => StatefulBuilder(
+        builder: (context, setSheetState) => SafeArea(
+          child: SingleChildScrollView(
+            padding: const EdgeInsets.fromLTRB(18, 10, 18, 24),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                const Text(
+                  '书架视图',
+                  style: TextStyle(fontWeight: FontWeight.w700),
+                ),
+                const SizedBox(height: 10),
+                SegmentedButton<_ShelfViewMode>(
+                  segments: const [
+                    ButtonSegment(
+                      value: _ShelfViewMode.coverFlow,
+                      icon: Icon(Icons.view_carousel_outlined),
+                    ),
+                    ButtonSegment(
+                      value: _ShelfViewMode.grid,
+                      icon: Icon(Icons.grid_view_rounded),
+                    ),
+                    ButtonSegment(
+                      value: _ShelfViewMode.list,
+                      icon: Icon(Icons.view_list_rounded),
+                    ),
+                  ],
+                  selected: {_viewMode},
+                  showSelectedIcon: false,
+                  onSelectionChanged: (value) {
+                    setState(() => _viewMode = value.first);
+                    setSheetState(() {});
                   },
                 ),
-              )
-              .toList(),
+                const SizedBox(height: 18),
+                const Text('筛选', style: TextStyle(fontWeight: FontWeight.w700)),
+                Wrap(
+                  spacing: 8,
+                  children: _ShelfFilter.values
+                      .map(
+                        (filter) => FilterChip(
+                          label: Text(filter.label),
+                          selected: _filter == filter,
+                          onSelected: (_) {
+                            setState(() => _filter = filter);
+                            setSheetState(() {});
+                          },
+                        ),
+                      )
+                      .toList(),
+                ),
+                const SizedBox(height: 12),
+                const Text('排序', style: TextStyle(fontWeight: FontWeight.w700)),
+                for (final sort in _ShelfSort.values)
+                  ListTile(
+                    title: Text(sort.label),
+                    trailing: _sort == sort
+                        ? const Icon(Icons.check_rounded)
+                        : null,
+                    onTap: () {
+                      setState(() => _sort = sort);
+                      setSheetState(() {});
+                    },
+                  ),
+                FilledButton(
+                  onPressed: () => Navigator.pop(context),
+                  child: const Text('完成'),
+                ),
+              ],
+            ),
+          ),
         ),
       ),
+    );
+  }
+
+  Widget _buildCollectionView(List<Book> books) {
+    if (_viewMode == _ShelfViewMode.list) {
+      return ListView.separated(
+        key: const ValueKey('shelf-list'),
+        padding: const EdgeInsets.fromLTRB(16, 14, 16, 100),
+        itemCount: books.length,
+        separatorBuilder: (_, _) =>
+            Divider(color: Theme.of(context).dividerColor),
+        itemBuilder: (context, index) {
+          final book = books[index];
+          final selected = _selectedBookIds.contains(book.id);
+          return ListTile(
+            key: ValueKey('shelf-list-${book.id}'),
+            onTap: () => _selectedBookIds.isEmpty
+                ? _openBook(book)
+                : _toggleSelected(book),
+            onLongPress: () => _toggleSelected(book),
+            leading: BookCover(book: book, width: 42),
+            title: Text(
+              book.title,
+              style: TextStyle(color: _onSurface(context)),
+            ),
+            subtitle: Text(
+              '${book.author} · ${(widget.readingStore.stateFor(book).progress * 100).round()}% · ${_formatBytes(book.fileSize)}',
+              style: TextStyle(color: _onSurfaceSubdued(context)),
+            ),
+            trailing: selected
+                ? Icon(
+                    Icons.check_circle_rounded,
+                    color: Theme.of(context).colorScheme.primary,
+                  )
+                : IconButton(
+                    tooltip: '书籍操作',
+                    onPressed: () => _showBookActions(book),
+                    icon: Icon(
+                      Icons.more_horiz_rounded,
+                      color: _onSurfaceSubdued(context),
+                    ),
+                  ),
+          );
+        },
+      );
+    }
+    return GridView.builder(
+      key: const ValueKey('shelf-grid'),
+      padding: const EdgeInsets.fromLTRB(18, 18, 18, 110),
+      gridDelegate: const SliverGridDelegateWithMaxCrossAxisExtent(
+        maxCrossAxisExtent: 180,
+        childAspectRatio: .58,
+        crossAxisSpacing: 16,
+        mainAxisSpacing: 18,
+      ),
+      itemCount: books.length,
+      itemBuilder: (context, index) {
+        final book = books[index];
+        final selected = _selectedBookIds.contains(book.id);
+        return GestureDetector(
+          key: ValueKey('shelf-grid-${book.id}'),
+          onTap: () => _selectedBookIds.isEmpty
+              ? _openBook(book)
+              : _toggleSelected(book),
+          onLongPress: () => _toggleSelected(book),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Expanded(
+                child: Stack(
+                  fit: StackFit.expand,
+                  children: [
+                    BookCoverArtwork(book: book),
+                    if (selected)
+                      ColoredBox(
+                        color: const Color(0x66000000),
+                        child: Align(
+                          alignment: Alignment.topRight,
+                          child: Padding(
+                            padding: const EdgeInsets.all(8),
+                            child: Icon(
+                              Icons.check_circle_rounded,
+                              color: Theme.of(context).colorScheme.primary,
+                            ),
+                          ),
+                        ),
+                      ),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 8),
+              Text(
+                book.title,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(
+                  color: _onSurface(context),
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+              Text(
+                book.author,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(
+                  color: _onSurfaceSubdued(context),
+                  fontSize: 12,
+                ),
+              ),
+            ],
+          ),
+        );
+      },
     );
   }
 
@@ -556,9 +917,10 @@ class _LibraryScreenState extends State<LibraryScreen>
                 hasQuery: _query.isNotEmpty,
                 onAdd: _showImportSheet,
                 onSort: _showSortMenu,
-                onEditCover: books.isEmpty
+                onEditCover:
+                    books.isEmpty || _viewMode != _ShelfViewMode.coverFlow
                     ? null
-                    : () => _changeCover(books[safeIndex]),
+                    : () => _showBookActions(books[safeIndex]),
               ),
               if (books.isEmpty)
                 Expanded(
@@ -568,115 +930,130 @@ class _LibraryScreenState extends State<LibraryScreen>
                 )
               else
                 Expanded(
-                  child: Stack(
-                    children: [
-                      Positioned.fill(
-                        child: AnimatedSwitcher(
-                          duration: const Duration(milliseconds: 140),
-                          child: _coversReady
-                              ? _CoverFlowQueue(
-                                  key: const ValueKey('coverflow-ready'),
-                                  books: books,
-                                  fallbackIndex: safeIndex,
-                                  shelfPosition: _shelfPosition,
-                                  touchedVirtualIndex: _touchedVirtualIndex,
-                                )
-                              : const Center(
-                                  key: ValueKey('coverflow-warming'),
-                                  child: Icon(
-                                    Icons.auto_stories_outlined,
-                                    size: 26,
-                                    color: Colors.white24,
-                                  ),
-                                ),
-                        ),
-                      ),
-                      Positioned.fill(
-                        child: LayoutBuilder(
-                          builder: (context, constraints) {
-                            final focusX = constraints.maxWidth / 2;
-                            return Stack(
-                              children: [
-                                Positioned.fill(
-                                  child: Listener(
-                                    onPointerDown: (event) => _touchBookAt(
-                                      event.localPosition.dx,
-                                      focusX,
-                                      books.length,
-                                    ),
-                                    onPointerMove: (event) => _touchBookAt(
-                                      event.localPosition.dx,
-                                      focusX,
-                                      books.length,
-                                    ),
-                                    onPointerCancel: (_) =>
-                                        _touchedVirtualIndex.value = null,
-                                    child: GestureDetector(
-                                      key: const ValueKey('book-carousel'),
-                                      behavior: HitTestBehavior.opaque,
-                                      onHorizontalDragStart: (_) {
-                                        _motionController.stop();
-                                        _motionController.value =
-                                            _shelfPosition.value;
-                                      },
-                                      onHorizontalDragUpdate: (details) {
-                                        _shelfPosition.value -=
-                                            details.delta.dx / _shelfItemExtent;
-                                        _touchBookAt(
-                                          details.localPosition.dx,
-                                          focusX,
-                                          books.length,
-                                        );
-                                      },
-                                      onHorizontalDragEnd: (details) =>
-                                          _settleShelf(
-                                            books,
-                                            details.velocity.pixelsPerSecond.dx,
+                  child: _viewMode == _ShelfViewMode.coverFlow
+                      ? Stack(
+                          children: [
+                            Positioned.fill(
+                              child: AnimatedSwitcher(
+                                duration: const Duration(milliseconds: 140),
+                                child: _coversReady
+                                    ? _CoverFlowQueue(
+                                        key: const ValueKey('coverflow-ready'),
+                                        books: books,
+                                        fallbackIndex: safeIndex,
+                                        shelfPosition: _shelfPosition,
+                                        touchedVirtualIndex:
+                                            _touchedVirtualIndex,
+                                      )
+                                    : const Center(
+                                        key: ValueKey('coverflow-warming'),
+                                        child: Icon(
+                                          Icons.auto_stories_outlined,
+                                          size: 26,
+                                          color: Colors.white24,
+                                        ),
+                                      ),
+                              ),
+                            ),
+                            Positioned.fill(
+                              child: LayoutBuilder(
+                                builder: (context, constraints) {
+                                  final focusX = constraints.maxWidth / 2;
+                                  return Stack(
+                                    children: [
+                                      Positioned.fill(
+                                        child: Listener(
+                                          onPointerDown: (event) =>
+                                              _touchBookAt(
+                                                event.localPosition.dx,
+                                                focusX,
+                                                books.length,
+                                              ),
+                                          onPointerMove: (event) =>
+                                              _touchBookAt(
+                                                event.localPosition.dx,
+                                                focusX,
+                                                books.length,
+                                              ),
+                                          onPointerCancel: (_) =>
+                                              _touchedVirtualIndex.value = null,
+                                          child: GestureDetector(
+                                            key: const ValueKey(
+                                              'book-carousel',
+                                            ),
+                                            behavior: HitTestBehavior.opaque,
+                                            onHorizontalDragStart: (_) {
+                                              _motionController.stop();
+                                              _motionController.value =
+                                                  _shelfPosition.value;
+                                            },
+                                            onHorizontalDragUpdate: (details) {
+                                              _shelfPosition.value -=
+                                                  details.delta.dx /
+                                                  _shelfItemExtent;
+                                              _touchBookAt(
+                                                details.localPosition.dx,
+                                                focusX,
+                                                books.length,
+                                              );
+                                            },
+                                            onHorizontalDragEnd: (details) =>
+                                                _settleShelf(
+                                                  books,
+                                                  details
+                                                      .velocity
+                                                      .pixelsPerSecond
+                                                      .dx,
+                                                ),
+                                            onTapUp: (details) => _tapBookAt(
+                                              details.localPosition.dx,
+                                              focusX,
+                                              books,
+                                            ),
                                           ),
-                                      onTapUp: (details) => _tapBookAt(
-                                        details.localPosition.dx,
-                                        focusX,
-                                        books,
+                                        ),
                                       ),
-                                    ),
-                                  ),
-                                ),
-                                Positioned(
-                                  left: focusX - _shelfItemExtent / 2,
-                                  width: _shelfItemExtent,
-                                  top: 0,
-                                  bottom: 0,
-                                  child: IgnorePointer(
-                                    child: SizedBox(
-                                      key: ValueKey(
-                                        'book-${books[safeIndex].title}',
+                                      Positioned(
+                                        left: focusX - _shelfItemExtent / 2,
+                                        width: _shelfItemExtent,
+                                        top: 0,
+                                        bottom: 0,
+                                        child: IgnorePointer(
+                                          child: SizedBox(
+                                            key: ValueKey(
+                                              'book-${books[safeIndex].title}',
+                                            ),
+                                          ),
+                                        ),
                                       ),
-                                    ),
-                                  ),
-                                ),
-                              ],
-                            );
-                          },
-                        ),
-                      ),
-                      Positioned(
-                        left: 0,
-                        right: 0,
-                        bottom: 0,
-                        child: _SelectedBookOverlay(
-                          book: books[safeIndex],
-                          index: safeIndex,
-                          count: books.length,
-                          onOpen: () => _openBook(books[safeIndex]),
-                          onPrevious: () => _stepShelf(books, -1),
-                          onNext: () => _stepShelf(books, 1),
-                          compact:
-                              MediaQuery.orientationOf(context) ==
-                              Orientation.landscape,
-                        ),
-                      ),
-                    ],
-                  ),
+                                    ],
+                                  );
+                                },
+                              ),
+                            ),
+                            Positioned(
+                              left: 0,
+                              right: 0,
+                              bottom: 0,
+                              child: _SelectedBookOverlay(
+                                book: books[safeIndex],
+                                index: safeIndex,
+                                count: books.length,
+                                onOpen: () => _openBook(books[safeIndex]),
+                                onPrevious: books.length < 2
+                                    ? null
+                                    : () => _stepShelf(books, -1),
+                                onNext: books.length < 2
+                                    ? null
+                                    : () => _stepShelf(books, 1),
+                                compact:
+                                    MediaQuery.orientationOf(context) ==
+                                    Orientation.landscape,
+                              ),
+                            ),
+                          ],
+                        )
+                      : _buildCollectionView(books),
                 ),
             ],
           ),
@@ -686,6 +1063,58 @@ class _LibraryScreenState extends State<LibraryScreen>
             child: ColoredBox(
               color: Color(0x99000000),
               child: Center(child: CircularProgressIndicator()),
+            ),
+          ),
+        if (_selectedBookIds.isNotEmpty)
+          Positioned(
+            left: 18,
+            right: 18,
+            bottom: 12,
+            child: SafeArea(
+              top: false,
+              child: Material(
+                color: const Color(0xFF20252A),
+                borderRadius: BorderRadius.circular(8),
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 10,
+                    vertical: 6,
+                  ),
+                  child: Row(
+                    children: [
+                      IconButton(
+                        tooltip: '取消选择',
+                        onPressed: () => setState(_selectedBookIds.clear),
+                        icon: const Icon(
+                          Icons.close_rounded,
+                          color: Colors.white,
+                        ),
+                      ),
+                      Text(
+                        '已选 ${_selectedBookIds.length} 本',
+                        style: const TextStyle(color: Colors.white),
+                      ),
+                      const Spacer(),
+                      IconButton(
+                        tooltip: '导出所选',
+                        onPressed: _exportSelected,
+                        icon: const Icon(
+                          Icons.ios_share_rounded,
+                          color: Colors.white,
+                        ),
+                      ),
+                      IconButton(
+                        tooltip: '删除所选',
+                        onPressed: _deleteSelected,
+                        icon: const Icon(
+                          Icons.delete_outline_rounded,
+                          color: Colors.redAccent,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
             ),
           ),
       ],
@@ -698,10 +1127,32 @@ enum _DuplicateAction { replace, keepBoth, cancel }
 enum _ShelfSort {
   recent('最近阅读'),
   imported('最近导入'),
-  title('书名排序');
+  title('书名排序'),
+  author('作者排序'),
+  progress('阅读进度'),
+  fileSize('文件大小');
 
   const _ShelfSort(this.label);
   final String label;
+}
+
+enum _ShelfFilter {
+  all('全部'),
+  unread('未读'),
+  reading('阅读中'),
+  finished('已读完'),
+  annotated('有批注');
+
+  const _ShelfFilter(this.label);
+  final String label;
+}
+
+enum _ShelfViewMode { coverFlow, grid, list }
+
+String _formatBytes(int bytes) {
+  if (bytes <= 0) return '未知大小';
+  if (bytes < 1024 * 1024) return '${(bytes / 1024).toStringAsFixed(0)} KB';
+  return '${(bytes / 1024 / 1024).toStringAsFixed(1)} MB';
 }
 
 class _LibraryToolbar extends StatelessWidget {
@@ -725,110 +1176,117 @@ class _LibraryToolbar extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    final titleColor = Theme.of(context).colorScheme.onSurface;
+    final iconBg = isDark
+        ? Colors.white.withValues(alpha: .08)
+        : Colors.black.withValues(alpha: .06);
+    final iconFg = titleColor;
+    final searchFill = isDark
+        ? Colors.white.withValues(alpha: .09)
+        : Colors.black.withValues(alpha: .05);
+    final searchHint = isDark ? Colors.white38 : Colors.black38;
+    final searchIcon = isDark ? Colors.white54 : Colors.black54;
     return Padding(
       padding: const EdgeInsets.fromLTRB(20, 13, 12, 4),
-      child: Row(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          const Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
+          Row(
             children: [
               Text(
                 '浮光书架',
                 style: TextStyle(
-                  color: Colors.white,
+                  color: titleColor,
                   fontSize: 25,
                   fontWeight: FontWeight.w800,
                   letterSpacing: .8,
                 ),
               ),
-              SizedBox(height: 2),
-              Text(
-                '在书页之间穿行',
-                style: TextStyle(
-                  color: Colors.white38,
-                  fontSize: 10,
-                  letterSpacing: 1.6,
+              const Spacer(),
+              IconButton(
+                tooltip: '书架排序',
+                onPressed: onSort,
+                style: IconButton.styleFrom(
+                  foregroundColor: iconFg,
+                  backgroundColor: iconBg,
                 ),
+                icon: const Icon(Icons.sort_rounded, size: 20),
               ),
+              const SizedBox(width: 4),
+              IconButton(
+                key: const ValueKey('add-book-button'),
+                tooltip: '导入书籍',
+                onPressed: onAdd,
+                style: IconButton.styleFrom(
+                  foregroundColor: iconFg,
+                  backgroundColor: iconBg,
+                ),
+                icon: const Icon(Icons.add_rounded),
+              ),
+              if (onEditCover != null) ...[
+                const SizedBox(width: 4),
+                IconButton(
+                  key: const ValueKey('edit-cover-button'),
+                  tooltip: '更换当前书籍封面',
+                  onPressed: onEditCover,
+                  style: IconButton.styleFrom(
+                    foregroundColor: iconFg,
+                    backgroundColor: iconBg,
+                  ),
+                  icon: const Icon(Icons.photo_camera_back_outlined, size: 20),
+                ),
+              ],
             ],
           ),
-          const Spacer(),
+          const SizedBox(height: 8),
           SizedBox(
-            width: math.min(100, MediaQuery.sizeOf(context).width * .24),
             height: 42,
             child: TextField(
               key: const ValueKey('library-search'),
               controller: controller,
               onChanged: onSearchChanged,
-              style: const TextStyle(color: Colors.white, fontSize: 13),
+              style: TextStyle(color: titleColor, fontSize: 13),
               decoration: InputDecoration(
                 hintText: '搜索书籍',
-                hintStyle: const TextStyle(color: Colors.white38, fontSize: 12),
-                prefixIcon: const Icon(
+                hintStyle: TextStyle(color: searchHint, fontSize: 12),
+                prefixIcon: Icon(
                   Icons.search_rounded,
                   size: 19,
-                  color: Colors.white54,
+                  color: searchIcon,
                 ),
                 prefixIconConstraints: const BoxConstraints(minWidth: 38),
                 suffixIcon: hasQuery
                     ? IconButton(
                         onPressed: onClear,
-                        icon: const Icon(
+                        icon: Icon(
                           Icons.close_rounded,
-                          color: Colors.white54,
+                          color: searchIcon,
                           size: 16,
                         ),
                       )
                     : null,
                 filled: true,
-                fillColor: Colors.white.withValues(alpha: .09),
+                fillColor: searchFill,
                 contentPadding: const EdgeInsets.symmetric(vertical: 10),
                 enabledBorder: OutlineInputBorder(
                   borderRadius: BorderRadius.circular(22),
                   borderSide: BorderSide(
-                    color: Colors.white.withValues(alpha: .1),
+                    color: isDark
+                        ? Colors.white.withValues(alpha: .1)
+                        : Colors.black.withValues(alpha: .1),
                   ),
                 ),
                 focusedBorder: OutlineInputBorder(
                   borderRadius: BorderRadius.circular(22),
                   borderSide: BorderSide(
-                    color: Colors.white.withValues(alpha: .28),
+                    color: isDark
+                        ? Colors.white.withValues(alpha: .28)
+                        : Theme.of(context).colorScheme.primary,
                   ),
                 ),
               ),
             ),
-          ),
-          IconButton(
-            tooltip: '书架排序',
-            onPressed: onSort,
-            style: IconButton.styleFrom(
-              foregroundColor: Colors.white,
-              backgroundColor: Colors.white.withValues(alpha: .08),
-            ),
-            icon: const Icon(Icons.sort_rounded, size: 20),
-          ),
-          const SizedBox(width: 4),
-          IconButton(
-            key: const ValueKey('add-book-button'),
-            tooltip: '导入书籍',
-            onPressed: onAdd,
-            style: IconButton.styleFrom(
-              foregroundColor: Colors.white,
-              backgroundColor: Colors.white.withValues(alpha: .08),
-            ),
-            icon: const Icon(Icons.add_rounded),
-          ),
-          const SizedBox(width: 4),
-          IconButton(
-            key: const ValueKey('edit-cover-button'),
-            tooltip: '更换当前书籍封面',
-            onPressed: onEditCover,
-            style: IconButton.styleFrom(
-              foregroundColor: Colors.white,
-              disabledForegroundColor: Colors.white24,
-              backgroundColor: Colors.white.withValues(alpha: .08),
-            ),
-            icon: const Icon(Icons.photo_camera_back_outlined, size: 20),
           ),
         ],
       ),
@@ -844,20 +1302,28 @@ class _DepthBackground extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    if (books.isEmpty) return const ColoredBox(color: Color(0xFF08090B));
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    if (books.isEmpty) {
+      return ColoredBox(color: Theme.of(context).scaffoldBackgroundColor);
+    }
     final glow = books[fallbackIndex].palette.first;
     return RepaintBoundary(
       child: DecoratedBox(
         decoration: BoxDecoration(
-          color: const Color(0xFF050A0D),
           gradient: RadialGradient(
             center: const Alignment(0, -.12),
             radius: .9,
-            colors: [
-              Color.lerp(glow, const Color(0xFF102129), .72)!,
-              const Color(0xFF081116),
-              const Color(0xFF030608),
-            ],
+            colors: isDark
+                ? [
+                    Color.lerp(glow, const Color(0xFF102129), .72)!,
+                    const Color(0xFF081116),
+                    const Color(0xFF030608),
+                  ]
+                : [
+                    Color.lerp(glow, Colors.white, .75)!,
+                    Color.lerp(glow, const Color(0xFFF0F2F5), .88)!,
+                    Theme.of(context).scaffoldBackgroundColor,
+                  ],
             stops: const [0, .5, 1],
           ),
         ),
@@ -892,35 +1358,31 @@ class _CoverFlowQueue extends StatelessWidget {
                   ? shelfPosition.value
                   : fallbackIndex.toDouble();
               final center = page.floor();
-              // Paint exactly seven independently transformed books. The
-              // virtual indices recycle at the clipped top and bottom edges.
-              final radius = books.length == 1 ? 0 : 3;
+              // Keep recycled entries outside the visible stage to avoid edge
+              // flashes while a transformed card crosses an integer page.
+              final radius = books.length == 1 ? 0 : 4;
               final touched = touchedVirtualIndex.value;
               final committedVirtualIndex = books.length == 1
                   ? 0
                   : fallbackIndex +
                         ((page - fallbackIndex) / books.length).round() *
                             books.length;
-              final entries =
-                  <_FlowEntry>[
-                    for (
-                      var virtualIndex = center - radius;
-                      virtualIndex <= center + radius;
-                      virtualIndex++
-                    )
-                      _FlowEntry(
-                        virtualIndex: virtualIndex,
-                        bookIndex: _LibraryScreenState._loopIndex(
-                          virtualIndex,
-                          books.length,
-                        ),
-                        pose: _coverFlowPose(virtualIndex - page),
-                        touched: virtualIndex == touched,
-                      ),
-                  ]..sort((a, b) {
-                    if (a.touched != b.touched) return a.touched ? 1 : -1;
-                    return a.pose.z.compareTo(b.pose.z);
-                  });
+              final entries = <_FlowEntry>[
+                for (
+                  var virtualIndex = center - radius;
+                  virtualIndex <= center + radius;
+                  virtualIndex++
+                )
+                  _FlowEntry(
+                    virtualIndex: virtualIndex,
+                    bookIndex: _LibraryScreenState._loopIndex(
+                      virtualIndex,
+                      books.length,
+                    ),
+                    pose: _coverFlowPose(virtualIndex - page),
+                    touched: virtualIndex == touched,
+                  ),
+              ]..sort((a, b) => a.pose.z.compareTo(b.pose.z));
               final landscape =
                   MediaQuery.orientationOf(context) == Orientation.landscape;
               final focusY = constraints.maxHeight * (landscape ? .42 : .36);
@@ -1039,7 +1501,7 @@ class _CinematicBook extends StatelessWidget {
         ),
       ),
     );
-    final visual = isCenterOccurrence
+    final visual = hasStableTestKey
         ? BookHero(book: book, child: volume)
         : volume;
 
@@ -1084,7 +1546,7 @@ class _CoverFlowCard extends StatelessWidget {
           borderRadius: BorderRadius.circular(14),
           border: Border.all(
             color: Colors.white.withValues(alpha: selected ? .44 : .14),
-            width: selected ? 1.4 : .8,
+            width: 1,
           ),
         ),
         child: ClipRRect(
@@ -1112,8 +1574,8 @@ class _SelectedBookOverlay extends StatelessWidget {
   final int index;
   final int count;
   final VoidCallback onOpen;
-  final VoidCallback onPrevious;
-  final VoidCallback onNext;
+  final VoidCallback? onPrevious;
+  final VoidCallback? onNext;
   final bool compact;
 
   @override
@@ -1268,7 +1730,7 @@ class _ShelfControlButton extends StatelessWidget {
 
   final IconData icon;
   final String tooltip;
-  final VoidCallback onPressed;
+  final VoidCallback? onPressed;
   final bool compact;
   final bool primary;
 
@@ -1307,28 +1769,32 @@ class _ImportOption extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final colors = Theme.of(context).colorScheme;
     return Material(
-      color: Colors.white.withValues(alpha: .06),
+      color: colors.surfaceContainerHighest.withValues(alpha: .6),
       borderRadius: BorderRadius.circular(17),
       child: ListTile(
         onTap: onTap,
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(17)),
         contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 5),
-        leading: Icon(icon, color: Colors.white70),
+        leading: Icon(icon, color: colors.onSurface.withValues(alpha: .7)),
         title: Text(
           title,
-          style: const TextStyle(
-            color: Colors.white,
+          style: TextStyle(
+            color: colors.onSurface,
             fontWeight: FontWeight.w600,
           ),
         ),
         subtitle: Text(
           subtitle,
-          style: const TextStyle(color: Colors.white38, fontSize: 12),
+          style: TextStyle(
+            color: colors.onSurface.withValues(alpha: .48),
+            fontSize: 12,
+          ),
         ),
-        trailing: const Icon(
+        trailing: Icon(
           Icons.chevron_right_rounded,
-          color: Colors.white38,
+          color: colors.onSurface.withValues(alpha: .38),
         ),
       ),
     );
@@ -1340,13 +1806,14 @@ class _EmptySearch extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return const Center(
+    final subdued = _onSurfaceSubdued(context, alpha: .42);
+    return Center(
       child: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
-          Icon(Icons.auto_stories_rounded, size: 48, color: Colors.white24),
-          SizedBox(height: 12),
-          Text('没有找到这本书', style: TextStyle(color: Colors.white54)),
+          Icon(Icons.auto_stories_rounded, size: 48, color: subdued),
+          const SizedBox(height: 12),
+          Text('没有找到这本书', style: TextStyle(color: subdued)),
         ],
       ),
     );
@@ -1360,31 +1827,35 @@ class _EmptyLibrary extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final colors = Theme.of(context).colorScheme;
     return Center(
       child: Padding(
         padding: const EdgeInsets.symmetric(horizontal: 40),
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            const Icon(
+            Icon(
               Icons.auto_stories_outlined,
               size: 54,
-              color: Colors.white24,
+              color: colors.onSurface.withValues(alpha: .28),
             ),
             const SizedBox(height: 16),
-            const Text(
+            Text(
               '书架还是空的',
               style: TextStyle(
-                color: Colors.white,
+                color: colors.onSurface,
                 fontSize: 20,
                 fontWeight: FontWeight.w700,
               ),
             ),
             const SizedBox(height: 7),
-            const Text(
+            Text(
               '导入 TXT、EPUB 或 PDF，开始建立你的私人书架。',
               textAlign: TextAlign.center,
-              style: TextStyle(color: Colors.white38, height: 1.55),
+              style: TextStyle(
+                color: colors.onSurface.withValues(alpha: .48),
+                height: 1.55,
+              ),
             ),
             const SizedBox(height: 20),
             FilledButton.icon(

@@ -7,6 +7,8 @@ import '../services/reading_store.dart';
 import '../widgets/book_hero.dart';
 import '../widgets/native_book_model.dart';
 import 'reader_screen.dart';
+import 'pdf_reader_screen.dart';
+import 'epub_reader_screen.dart';
 
 class BookShowcaseScreen extends StatelessWidget {
   const BookShowcaseScreen({
@@ -21,7 +23,20 @@ class BookShowcaseScreen extends StatelessWidget {
   void _continueReading(BuildContext context) {
     Navigator.of(context).push(
       MaterialPageRoute<void>(
-        builder: (_) => ReaderScreen(book: book, readingStore: readingStore),
+        builder: (_) => switch (book.format) {
+          BookFormat.pdf => PdfReaderScreen(
+            book: book,
+            readingStore: readingStore,
+          ),
+          BookFormat.epub =>
+            book.sourceBytes?.isNotEmpty == true
+                ? EpubReaderScreen(book: book, readingStore: readingStore)
+                : ReaderScreen(book: book, readingStore: readingStore),
+          BookFormat.txt => ReaderScreen(
+            book: book,
+            readingStore: readingStore,
+          ),
+        },
       ),
     );
   }
@@ -112,22 +127,33 @@ class _ShowcaseToolbar extends StatelessWidget {
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
-              ListTile(
-                leading: Icon(
-                  bookmarked
-                      ? Icons.bookmark_remove_rounded
-                      : Icons.bookmark_add_rounded,
+              if (book.format == BookFormat.txt)
+                ListTile(
+                  leading: Icon(
+                    bookmarked
+                        ? Icons.bookmark_remove_rounded
+                        : Icons.bookmark_add_rounded,
+                  ),
+                  title: Text(bookmarked ? '取消第一章书签' : '收藏第一章'),
+                  onTap: () {
+                    readingStore.toggleBookmark(book, 0);
+                    Navigator.pop(sheetContext);
+                  },
                 ),
-                title: Text(bookmarked ? '取消第一章书签' : '收藏第一章'),
-                onTap: () {
-                  readingStore.toggleBookmark(book, 0);
-                  Navigator.pop(sheetContext);
-                },
-              ),
-              ListTile(
-                leading: const Icon(Icons.info_outline_rounded),
-                title: const Text('书籍信息'),
-                subtitle: Text('${book.author} · ${book.chapters.length} 章'),
+              Padding(
+                padding: const EdgeInsets.fromLTRB(16, 10, 16, 14),
+                child: Row(
+                  children: [
+                    const Icon(Icons.info_outline_rounded),
+                    const SizedBox(width: 16),
+                    Expanded(
+                      child: Text(
+                        '${book.author} · ${book.format.name.toUpperCase()}'
+                        '${book.format == BookFormat.txt ? ' · ${book.chapters.length} 章' : ''}',
+                      ),
+                    ),
+                  ],
+                ),
               ),
               const Divider(),
               ListTile(
@@ -253,7 +279,11 @@ class _BookStage extends StatelessWidget {
   Widget build(BuildContext context) {
     return LayoutBuilder(
       builder: (context, constraints) {
-        final width = math.min(390.0, constraints.maxWidth * .96);
+        final width = math.min(
+          190.0,
+          math.min(constraints.maxWidth * .54, constraints.maxHeight / 1.48),
+        );
+        final height = width * 1.48;
         return Stack(
           alignment: Alignment.center,
           children: [
@@ -282,7 +312,7 @@ class _BookStage extends StatelessWidget {
               book: book,
               child: SizedBox(
                 width: width,
-                height: constraints.maxHeight,
+                height: height,
                 child: NativeBookModel(book: book),
               ),
             ),

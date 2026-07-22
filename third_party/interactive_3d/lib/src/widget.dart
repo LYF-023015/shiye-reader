@@ -95,6 +95,15 @@ class Interactive3d extends StatefulWidget {
   /// Widget displayed while the model is loading.
   final Widget? loadingWidget;
 
+  /// Widget displayed when native model initialization fails.
+  final Widget? errorWidget;
+
+  /// Called after the model, textures, environment and initial camera are ready.
+  final VoidCallback? onReady;
+
+  /// Called when native model initialization fails.
+  final ValueChanged<Object>? onError;
+
   /// PBR overrides to apply once when the model first loads. Selection wins
   /// visually; deselect restores the override.
   final List<MaterialOverride>? initialMaterialOverrides;
@@ -127,6 +136,9 @@ class Interactive3d extends StatefulWidget {
     this.selectionSequence,
     this.backgroundColor = Colors.black,
     this.loadingWidget,
+    this.errorWidget,
+    this.onReady,
+    this.onError,
     this.initialMaterialOverrides,
     this.initialEntityTextures,
   });
@@ -144,6 +156,8 @@ class Interactive3dState extends State<Interactive3d> {
   Interactive3dPlatform? _platform;
   int? _textureId;
   bool _isInitializing = false;
+  bool _isModelReady = false;
+  Object? _initializationError;
   double _renderRatio = 1.0;
 
   // iOS (PlatformView)
@@ -190,7 +204,7 @@ class Interactive3dState extends State<Interactive3d> {
           // High-end: near-native quality, Mid: balanced, Low: max performance
           // The native DeviceCapability tier is detected on init — here we approximate
           // based on pixel ratio as a proxy (high DPR devices tend to be flagship)
-          _renderRatio = dpr >= 3.0 ? dpr.clamp(1.0, 2.0) : dpr.clamp(1.0, 1.5);
+          _renderRatio = dpr.clamp(1.0, 1.25);
           _initializeTexture(size);
         }
 
@@ -201,10 +215,12 @@ class Interactive3dState extends State<Interactive3d> {
 
         return Container(
           color: widget.backgroundColor,
-          child: _textureId != null
-              ? _buildTextureWidget()
-              : (widget.loadingWidget ??
-                  const Center(child: CircularProgressIndicator())),
+          child: _initializationError != null
+              ? (widget.errorWidget ?? const Center(child: Icon(Icons.error_outline)))
+              : _textureId != null && _isModelReady
+                  ? _buildTextureWidget()
+                  : (widget.loadingWidget ??
+                      const Center(child: CircularProgressIndicator())),
         );
       },
     );
@@ -371,8 +387,14 @@ class Interactive3dState extends State<Interactive3d> {
       }
 
       await _loadAndroidModelAndEnvironment();
+      _isModelReady = true;
+      widget.onReady?.call();
+      if (mounted) setState(() {});
     } catch (e) {
       debugPrint('Error initializing texture: $e');
+      _initializationError = e;
+      widget.onError?.call(e);
+      if (mounted) setState(() {});
     } finally {
       _isInitializing = false;
     }

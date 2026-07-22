@@ -32,29 +32,31 @@ class BookCover extends StatelessWidget {
         fit: StackFit.expand,
         children: [
           _BookArtwork(book: book, logicalWidth: width),
-          Padding(
-            padding: EdgeInsets.all(width * .12),
-            child: Align(
-              alignment: Alignment.topCenter,
-              child: Text(
-                book.coverMark,
-                textAlign: TextAlign.center,
-                style: TextStyle(
-                  color: book.palette.last,
-                  fontSize: width * .11,
-                  height: 1.35,
-                  fontWeight: FontWeight.w600,
-                  letterSpacing: 1,
-                  shadows: [
-                    Shadow(
-                      color: Colors.white.withValues(alpha: .8),
-                      blurRadius: 5,
-                    ),
-                  ],
+          if (book.overlayCoverText)
+            Padding(
+              padding: EdgeInsets.all(width * .12),
+              child: Align(
+                alignment: Alignment.topCenter,
+                child: Text(
+                  book.coverMark,
+                  textAlign: TextAlign.center,
+                  style: TextStyle(
+                    color: book.palette.last,
+                    fontSize: width * .11,
+                    height: 1.35,
+                    fontFamily: 'ShiyeXingshu',
+                    fontWeight: FontWeight.w700,
+                    letterSpacing: .4,
+                    shadows: [
+                      Shadow(
+                        color: Colors.white.withValues(alpha: .8),
+                        blurRadius: 5,
+                      ),
+                    ],
+                  ),
                 ),
               ),
             ),
-          ),
         ],
       ),
     );
@@ -75,8 +77,7 @@ class BookCoverArtwork extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final height = width * 1.48;
-    final hasOriginalArtwork =
-        (book.coverBytes?.isNotEmpty ?? false) || book.coverAsset != null;
+    const showCoverText = true;
     return SizedBox(
       width: width,
       height: height,
@@ -89,7 +90,7 @@ class BookCoverArtwork extends StatelessWidget {
               logicalWidth: width,
               filterQuality: FilterQuality.low,
             ),
-            if (hasOriginalArtwork && book.overlayCoverText) ...[
+            if (showCoverText) ...[
               const DecoratedBox(
                 decoration: BoxDecoration(
                   gradient: LinearGradient(
@@ -115,11 +116,11 @@ class BookCoverArtwork extends StatelessWidget {
                     textAlign: TextAlign.center,
                     style: TextStyle(
                       color: Colors.white,
-                      fontFamily: 'serif',
-                      fontSize: width * .135,
+                      fontFamily: 'ShiyeXingshu',
+                      fontSize: width * .145,
                       height: 1.08,
-                      fontWeight: FontWeight.w800,
-                      letterSpacing: width * .006,
+                      fontWeight: FontWeight.w400,
+                      letterSpacing: width * .005,
                       shadows: const [
                         Shadow(
                           color: Colors.black54,
@@ -166,7 +167,6 @@ class BookCover3D extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final height = width * 1.48;
-    final title = book.title.split('').join('\n');
     final geometry = _BindingGeometry.forStyle(book.bindingStyle);
     final faceWidth = width - geometry.foreEdge;
 
@@ -276,14 +276,17 @@ class BookCover3D extends StatelessWidget {
                       left: faceWidth * .32,
                       right: faceWidth * .2,
                       child: Text(
-                        title,
+                        book.title,
+                        maxLines: 3,
+                        overflow: TextOverflow.ellipsis,
                         textAlign: TextAlign.center,
                         style: TextStyle(
                           color: book.palette.last,
-                          fontSize: faceWidth * .115,
-                          height: 1.12,
-                          fontWeight: FontWeight.w600,
-                          letterSpacing: 2,
+                          fontFamily: 'ShiyeXingshu',
+                          fontSize: faceWidth * .13,
+                          height: 1.18,
+                          fontWeight: FontWeight.w400,
+                          letterSpacing: 1,
                           shadows: [
                             Shadow(
                               color: Colors.white.withValues(alpha: .86),
@@ -293,26 +296,27 @@ class BookCover3D extends StatelessWidget {
                         ),
                       ),
                     ),
-                  Positioned(
-                    left: faceWidth * .2,
-                    right: faceWidth * .06,
-                    bottom: height * .18,
-                    child: Text(
-                      book.author,
-                      textAlign: TextAlign.center,
-                      style: TextStyle(
-                        color: book.palette.last.withValues(alpha: .82),
-                        fontSize: faceWidth * .06,
-                        fontWeight: FontWeight.w500,
-                        shadows: [
-                          Shadow(
-                            color: Colors.white.withValues(alpha: .85),
-                            blurRadius: 6,
-                          ),
-                        ],
+                  if (book.overlayCoverText)
+                    Positioned(
+                      left: faceWidth * .2,
+                      right: faceWidth * .06,
+                      bottom: height * .18,
+                      child: Text(
+                        book.author,
+                        textAlign: TextAlign.center,
+                        style: TextStyle(
+                          color: book.palette.last.withValues(alpha: .82),
+                          fontSize: faceWidth * .06,
+                          fontWeight: FontWeight.w500,
+                          shadows: [
+                            Shadow(
+                              color: Colors.white.withValues(alpha: .85),
+                              blurRadius: 6,
+                            ),
+                          ],
+                        ),
                       ),
                     ),
-                  ),
                   Positioned(
                     left: faceWidth * .12,
                     right: 0,
@@ -466,7 +470,7 @@ Future<void> precacheBookCoverArtwork(Book book, int pixelWidth) async {
 
 Future<ui.Image> _presetCoverImage(Book book, int pixelWidth) {
   final key =
-      '${book.id}|${book.coverTemplate}|$pixelWidth|${book.overlayCoverText}';
+      'xingshu-v1|${book.id}|${book.coverTemplate}|$pixelWidth|${book.overlayCoverText}';
   return _presetCoverRasterCache.putIfAbsent(
     key,
     () => _renderPresetCover(book, pixelWidth),
@@ -524,57 +528,6 @@ Future<ui.Image> _renderPresetCover(Book book, int width) async {
     rect,
     Paint(),
   );
-  if (book.overlayCoverText) {
-    canvas.drawRect(
-      rect,
-      Paint()
-        ..shader = const LinearGradient(
-          begin: Alignment.topCenter,
-          end: Alignment.bottomCenter,
-          colors: [Color(0x42000000), Colors.transparent, Color(0x82000000)],
-          stops: [0, .55, 1],
-        ).createShader(rect),
-    );
-    final title = TextPainter(
-      text: TextSpan(
-        text: book.title,
-        style: TextStyle(
-          color: Colors.white,
-          fontFamily: 'serif',
-          fontSize: width * .135,
-          height: 1.08,
-          fontWeight: FontWeight.w800,
-          shadows: const [
-            Shadow(color: Colors.black54, blurRadius: 8, offset: Offset(0, 2)),
-          ],
-        ),
-      ),
-      textAlign: TextAlign.center,
-      textDirection: TextDirection.ltr,
-      maxLines: 3,
-      ellipsis: '…',
-    )..layout(maxWidth: width * .72);
-    title.paint(
-      canvas,
-      Offset((width - title.width) / 2, height * .4 - title.height / 2),
-    );
-    final author = TextPainter(
-      text: TextSpan(
-        text: book.author,
-        style: TextStyle(
-          color: Colors.white.withValues(alpha: .86),
-          fontSize: width * .06,
-          fontWeight: FontWeight.w600,
-          letterSpacing: 1.2,
-        ),
-      ),
-      textAlign: TextAlign.center,
-      textDirection: TextDirection.ltr,
-      maxLines: 1,
-      ellipsis: '…',
-    )..layout(maxWidth: width * .72);
-    author.paint(canvas, Offset((width - author.width) / 2, height * .84));
-  }
   final result = await recorder.endRecording().toImage(width, height);
   codec.dispose();
   source.dispose();

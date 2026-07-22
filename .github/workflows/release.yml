@@ -1,0 +1,47 @@
+name: Android Release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: 3.44.6
+          cache: true
+      - run: flutter clean
+      - run: flutter pub get
+      - run: flutter analyze
+      - run: flutter test
+      - name: Configure signing
+        env:
+          KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          STORE_PASSWORD: ${{ secrets.ANDROID_STORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          test -n "$KEYSTORE_BASE64"
+          echo "$KEYSTORE_BASE64" | base64 --decode > android/app/shiye-release.jks
+          printf 'storeFile=shiye-release.jks\nstorePassword=%s\nkeyAlias=%s\nkeyPassword=%s\n' \
+            "$STORE_PASSWORD" "$KEY_ALIAS" "$KEY_PASSWORD" > android/key.properties
+      - run: flutter build apk --release
+      - run: flutter build appbundle --release
+      - name: Rename artifacts
+        run: |
+          cp build/app/outputs/flutter-apk/app-release.apk Shiye-${GITHUB_REF_NAME}-android.apk
+          cp build/app/outputs/bundle/release/app-release.aab Shiye-${GITHUB_REF_NAME}-android.aab
+      - uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: |
+            Shiye-${{ github.ref_name }}-android.apk
+            Shiye-${{ github.ref_name }}-android.aab

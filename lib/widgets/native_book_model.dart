@@ -1,5 +1,6 @@
 import 'dart:io';
 import 'dart:ui' as ui;
+import 'dart:async';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -23,11 +24,22 @@ class NativeBookModel extends StatefulWidget {
 
 class _NativeBookModelState extends State<NativeBookModel> {
   late Future<Uint8List> _coverTexture;
+  Timer? _readinessTimer;
+  bool _useStaticFallback = false;
 
   @override
   void initState() {
     super.initState();
     _coverTexture = _loadCoverTexture();
+    _readinessTimer = Timer(const Duration(seconds: 8), () {
+      if (mounted) setState(() => _useStaticFallback = true);
+    });
+  }
+
+  @override
+  void dispose() {
+    _readinessTimer?.cancel();
+    super.dispose();
   }
 
   @override
@@ -50,7 +62,10 @@ class _NativeBookModelState extends State<NativeBookModel> {
       final data = await rootBundle.load(asset);
       source = data.buffer.asUint8List(data.offsetInBytes, data.lengthInBytes);
     }
-    if (!widget.book.overlayCoverText) return source;
+    final hasOriginalArtwork =
+        (widget.book.coverBytes?.isNotEmpty ?? false) ||
+        widget.book.coverAsset != null;
+    if (hasOriginalArtwork && !widget.book.overlayCoverText) return source;
     return _composeCoverTexture(source);
   }
 
@@ -79,10 +94,10 @@ class _NativeBookModelState extends State<NativeBookModel> {
         text: widget.book.title,
         style: TextStyle(
           color: Colors.white,
-          fontFamily: 'serif',
-          fontSize: width * .13,
+          fontFamily: 'ShiyeXingshu',
+          fontSize: width * .14,
           height: 1.08,
-          fontWeight: FontWeight.w800,
+          fontWeight: FontWeight.w400,
           shadows: const [
             Shadow(color: Colors.black54, blurRadius: 12, offset: Offset(0, 3)),
           ],
@@ -132,7 +147,9 @@ class _NativeBookModelState extends State<NativeBookModel> {
 
   @override
   Widget build(BuildContext context) {
-    if (!Platform.isAndroid && !Platform.isIOS) {
+    if (_useStaticFallback ||
+        MediaQuery.disableAnimationsOf(context) ||
+        (!Platform.isAndroid && !Platform.isIOS)) {
       return Center(child: BookCover3D(book: widget.book, width: 205));
     }
     return FutureBuilder<Uint8List>(
@@ -140,7 +157,14 @@ class _NativeBookModelState extends State<NativeBookModel> {
       builder: (context, snapshot) {
         final texture = snapshot.data;
         if (texture == null) {
-          return Center(child: BookCover3D(book: widget.book, width: 190));
+          return LayoutBuilder(
+            builder: (context, constraints) => Center(
+              child: BookCoverArtwork(
+                book: widget.book,
+                width: constraints.maxWidth,
+              ),
+            ),
+          );
         }
         return ClipRRect(
           borderRadius: BorderRadius.circular(24),
@@ -155,9 +179,22 @@ class _NativeBookModelState extends State<NativeBookModel> {
               EntityTexture(name: 'BackCover', bytes: texture),
               EntityTexture(name: 'Spine', bytes: texture),
             ],
-            loadingWidget: Center(
-              child: BookCover3D(book: widget.book, width: 190),
+            loadingWidget: LayoutBuilder(
+              builder: (context, constraints) => Center(
+                child: BookCoverArtwork(
+                  book: widget.book,
+                  width: constraints.maxWidth,
+                ),
+              ),
             ),
+            errorWidget: Center(
+              child: BookCover3D(book: widget.book, width: 205),
+            ),
+            onReady: () => _readinessTimer?.cancel(),
+            onError: (_) {
+              _readinessTimer?.cancel();
+              if (mounted) setState(() => _useStaticFallback = true);
+            },
           ),
         );
       },

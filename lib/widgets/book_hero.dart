@@ -3,7 +3,7 @@ import 'package:flutter/material.dart';
 import '../models/book.dart';
 import 'book_cover.dart';
 
-String bookHeroTag(Book book) => 'book-extract-${book.title}-${book.author}';
+String bookHeroTag(Book book) => 'book-extract-${book.id}';
 
 class BookHero extends StatelessWidget {
   const BookHero({super.key, required this.book, required this.child});
@@ -25,8 +25,8 @@ class BookHero extends StatelessWidget {
                 final t = animation.value.clamp(0.0, 1.0);
                 final extraction = _phase(t, 0, .34, Curves.easeOutCubic);
                 final open = _phase(t, .36, .72, Curves.easeInOutCubic);
-                final close = _phase(t, .82, .98, Curves.easeInOutCubic);
-                final openAmount = open * (1 - close) * 1.42;
+                final close = _phase(t, .7, .9, Curves.easeInOutCubic);
+                final openAmount = open * (1 - close) * 1.12;
                 final liftScale = 1 + extraction * .12;
 
                 return Material(
