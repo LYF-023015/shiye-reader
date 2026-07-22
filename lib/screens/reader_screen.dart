@@ -48,9 +48,11 @@ class _ReaderScreenState extends State<ReaderScreen> {
   final FlutterTts _tts = FlutterTts();
   final DateTime _openedAt = DateTime.now();
   Timer? _progressTimer;
+  Timer? _controlsTimer;
   String _selectedText = '';
   Timer? _autoScrollTimer;
   bool _autoScrolling = false;
+  late double _autoScrollSpeed;
   bool _speaking = false;
   List<_TextPage> _textPages = const [];
   String _paginationKey = '';
@@ -68,7 +70,7 @@ class _ReaderScreenState extends State<ReaderScreen> {
       ? const Color(0xFFF2F0EA)
       : const Color(0xFF34363A);
 
-  Color get _readerSecondary => _readerForeground.withValues(alpha: .62);
+  Color get _readerSecondary => _readerForeground.withValues(alpha: .76);
 
   int get _currentCharacterOffset {
     if (_isPaged && _textPages.isNotEmpty) {
@@ -113,6 +115,10 @@ class _ReaderScreenState extends State<ReaderScreen> {
     _alignment = preferences.alignment;
     _eyeCare = preferences.eyeCare;
     _pageTurn = preferences.pageTurn == '仿真翻页' ? '左右滑动' : preferences.pageTurn;
+    _autoScrollSpeed =
+        const <double>[.75, 1, 1.5, 2, 3].contains(preferences.autoScrollSpeed)
+        ? preferences.autoScrollSpeed
+        : 1.5;
     _liveProgress = state.progress;
     _restoreChapterProgress = state.chapterProgress;
     _restoreCharacterOffset =
@@ -131,7 +137,31 @@ class _ReaderScreenState extends State<ReaderScreen> {
       ..setErrorHandler((_) {
         if (mounted) setState(() => _speaking = false);
       });
-    WidgetsBinding.instance.addPostFrameCallback((_) => _restorePosition());
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _restorePosition();
+      _restartControlsTimer();
+    });
+  }
+
+  void _restartControlsTimer() {
+    _controlsTimer?.cancel();
+    if (!_showControls) return;
+    _controlsTimer = Timer(const Duration(seconds: 4), () {
+      if (mounted) setState(() => _showControls = false);
+    });
+  }
+
+  void _setControlsVisible(bool visible) {
+    _controlsTimer?.cancel();
+    if (_showControls != visible) setState(() => _showControls = visible);
+    if (visible) _restartControlsTimer();
+  }
+
+  void _handleReaderTap(TapUpDetails details) {
+    final lowerHalf =
+        details.globalPosition.dy >= MediaQuery.sizeOf(context).height * .52;
+    if (!_showControls && !lowerHalf) return;
+    _setControlsVisible(!_showControls);
   }
 
   void _restorePosition() {
@@ -195,54 +225,97 @@ class _ReaderScreenState extends State<ReaderScreen> {
       return;
     }
     setState(() => _autoScrolling = true);
-    _autoScrollTimer = Timer.periodic(const Duration(milliseconds: 45), (_) {
+    _autoScrollTimer = Timer.periodic(const Duration(milliseconds: 16), (_) {
       if (!mounted || !_scrollController.hasClients) return;
       final position = _scrollController.position;
-      if (position.pixels >= position.maxScrollExtent) {
+      if (position.pixels >= position.maxScrollExtent - .5) {
+        if (_chapterIndex < widget.book.chapters.length - 1 &&
+            !_turningChapter) {
+          _turningChapter = true;
+          _jumpToOffset(_chapterIndex + 1, 0);
+          Future<void>.delayed(const Duration(milliseconds: 180), () {
+            _turningChapter = false;
+          });
+          return;
+        }
         _autoScrollTimer?.cancel();
         setState(() => _autoScrolling = false);
         return;
       }
       _scrollController.jumpTo(
-        (position.pixels + .7).clamp(0, position.maxScrollExtent),
+        (position.pixels + .65 * _autoScrollSpeed).clamp(
+          0,
+          position.maxScrollExtent,
+        ),
       );
     });
+  }
+
+  void _setAutoScrollSpeed(double value) {
+    final speed = value.clamp(.75, 3.0);
+    setState(() => _autoScrollSpeed = speed);
+    widget.readingStore.updateReaderPreferences(
+      widget.readingStore.readerPreferences.copyWith(autoScrollSpeed: speed),
+    );
   }
 
   Future<void> _showReaderTools() async {
     final action = await showModalBottomSheet<String>(
       context: context,
       showDragHandle: true,
-      builder: (context) => SafeArea(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            ListTile(
-              leading: const Icon(Icons.search_rounded),
-              title: const Text('全文搜索'),
-              onTap: () => Navigator.pop(context, 'search'),
-            ),
-            ListTile(
-              enabled: !_isPaged,
-              leading: Icon(
-                _autoScrolling
-                    ? Icons.pause_circle_outline_rounded
-                    : Icons.slow_motion_video_rounded,
+      builder: (context) => StatefulBuilder(
+        builder: (context, setSheetState) => SafeArea(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              ListTile(
+                leading: const Icon(Icons.search_rounded),
+                title: const Text('全文搜索'),
+                onTap: () => Navigator.pop(context, 'search'),
               ),
-              title: Text(_autoScrolling ? '停止自动滚动' : '自动滚动'),
-              subtitle: _isPaged ? const Text('仅上下滚动模式可用') : null,
-              onTap: () => Navigator.pop(context, 'auto'),
-            ),
-            ListTile(
-              leading: Icon(
-                _speaking
-                    ? Icons.stop_circle_outlined
-                    : Icons.record_voice_over_outlined,
+              ListTile(
+                enabled: !_isPaged,
+                leading: Icon(
+                  _autoScrolling
+                      ? Icons.pause_circle_outline_rounded
+                      : Icons.slow_motion_video_rounded,
+                ),
+                title: Text(_autoScrolling ? '停止自动滚动' : '自动滚动'),
+                subtitle: _isPaged ? const Text('仅上下滚动模式可用') : null,
+                trailing: _isPaged
+                    ? null
+                    : DropdownButtonHideUnderline(
+                        child: DropdownButton<double>(
+                          key: const ValueKey('auto-scroll-speed'),
+                          value: _autoScrollSpeed,
+                          borderRadius: BorderRadius.circular(14),
+                          items: const [
+                            DropdownMenuItem(value: .75, child: Text('0.75×')),
+                            DropdownMenuItem(value: 1.0, child: Text('1.0×')),
+                            DropdownMenuItem(value: 1.5, child: Text('1.5×')),
+                            DropdownMenuItem(value: 2.0, child: Text('2.0×')),
+                            DropdownMenuItem(value: 3.0, child: Text('3.0×')),
+                          ],
+                          onChanged: (value) {
+                            if (value == null) return;
+                            _setAutoScrollSpeed(value);
+                            setSheetState(() {});
+                          },
+                        ),
+                      ),
+                onTap: () => Navigator.pop(context, 'auto'),
               ),
-              title: Text(_speaking ? '停止朗读' : '朗读本章'),
-              onTap: () => Navigator.pop(context, 'speech'),
-            ),
-          ],
+              ListTile(
+                leading: Icon(
+                  _speaking
+                      ? Icons.stop_circle_outlined
+                      : Icons.record_voice_over_outlined,
+                ),
+                title: Text(_speaking ? '停止朗读' : '朗读本章'),
+                onTap: () => Navigator.pop(context, 'speech'),
+              ),
+            ],
+          ),
         ),
       ),
     );
@@ -367,6 +440,7 @@ class _ReaderScreenState extends State<ReaderScreen> {
   @override
   void dispose() {
     _progressTimer?.cancel();
+    _controlsTimer?.cancel();
     _autoScrollTimer?.cancel();
     _tts.stop();
     _commitProgress(rebuild: false);
@@ -447,14 +521,16 @@ class _ReaderScreenState extends State<ReaderScreen> {
                         fontWeight: FontWeight.w700,
                       ),
                     ),
-                    const SizedBox(height: 4),
-                    Text(
-                      widget.book.author,
-                      style: const TextStyle(
-                        color: AppColors.secondary,
-                        fontSize: 13,
+                    if (widget.book.displayAuthor.isNotEmpty) ...[
+                      const SizedBox(height: 4),
+                      Text(
+                        widget.book.displayAuthor,
+                        style: const TextStyle(
+                          color: AppColors.secondary,
+                          fontSize: 13,
+                        ),
                       ),
-                    ),
+                    ],
                   ],
                 ),
               ),
@@ -851,75 +927,115 @@ class _ReaderScreenState extends State<ReaderScreen> {
     );
   }
 
+  bool _handleScrollingNotification(ScrollNotification notification) {
+    if (_turningChapter) return false;
+    var direction = 0;
+    if (notification is OverscrollNotification) {
+      if (notification.overscroll > 12) direction = 1;
+      if (notification.overscroll < -12) direction = -1;
+    } else if (notification is ScrollEndNotification &&
+        notification.metrics.extentAfter <= .5) {
+      direction = 1;
+    }
+    final target = _chapterIndex + direction;
+    if (direction == 0 || target < 0 || target >= widget.book.chapters.length) {
+      return false;
+    }
+    _turningChapter = true;
+    final targetChapter = widget.book.chapters[target];
+    _jumpToOffset(target, direction > 0 ? 0 : targetChapter.content.length);
+    Future<void>.delayed(const Duration(milliseconds: 350), () {
+      _turningChapter = false;
+    });
+    return false;
+  }
+
   Widget _buildScrollingBody() => GestureDetector(
     key: const ValueKey('reader-page'),
     behavior: HitTestBehavior.opaque,
-    onTap: () => setState(() => _showControls = !_showControls),
-    child: SingleChildScrollView(
-      controller: _scrollController,
-      padding: const EdgeInsets.fromLTRB(34, 92, 34, 90),
-      child: SelectionArea(
-        onSelectionChanged: (content) {
-          final selected = content?.plainText ?? '';
-          if (selected != _selectedText && mounted) {
-            setState(() => _selectedText = selected);
-          }
-        },
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(
-              _chapter.title,
-              style: TextStyle(
-                fontSize: _fontSize * .78,
-                color: _readerSecondary,
-                letterSpacing: .4,
-              ),
-            ),
-            const SizedBox(height: 26),
-            if (_chapter.hasRichContent)
-              fh.Html(
-                key: ValueKey('rich-chapter-$_chapterIndex'),
-                data: _chapter.html,
-                extensions: const [TableHtmlExtension(), SvgHtmlExtension()],
-                onLinkTap: (url, _, _) => _openLink(url),
-                style: {
-                  'body': fh.Style(
-                    margin: fh.Margins.zero,
-                    padding: fh.HtmlPaddings.zero,
-                    fontSize: fh.FontSize(_fontSize),
-                    lineHeight: fh.LineHeight.number(_lineHeight),
-                    color: _readerForeground,
-                    textAlign: _alignment,
-                  ),
-                  'img': fh.Style(width: fh.Width.auto()),
-                  'table': fh.Style(
-                    backgroundColor: Colors.white.withValues(alpha: .35),
-                  ),
-                  'blockquote': fh.Style(
-                    border: const Border(
-                      left: BorderSide(color: AppColors.secondary, width: 3),
-                    ),
-                    padding: fh.HtmlPaddings.only(left: 14),
-                  ),
-                  'pre': fh.Style(
-                    whiteSpace: fh.WhiteSpace.pre,
-                    fontFamily: 'monospace',
-                  ),
-                },
-              )
-            else
+    onTapUp: _handleReaderTap,
+    child: NotificationListener<ScrollNotification>(
+      onNotification: _handleScrollingNotification,
+      child: SingleChildScrollView(
+        controller: _scrollController,
+        padding: const EdgeInsets.fromLTRB(34, 92, 34, 110),
+        child: SelectionArea(
+          onSelectionChanged: (content) {
+            final selected = content?.plainText ?? '';
+            if (selected != _selectedText && mounted) {
+              setState(() => _selectedText = selected);
+            }
+          },
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
               Text(
-                _chapter.content,
-                textAlign: _alignment,
+                _chapter.title,
                 style: TextStyle(
-                  fontSize: _fontSize,
-                  height: _lineHeight,
-                  color: _readerForeground,
-                  letterSpacing: .35,
+                  fontSize: _fontSize * .78,
+                  color: _readerSecondary,
+                  letterSpacing: .4,
                 ),
               ),
-          ],
+              const SizedBox(height: 26),
+              if (_chapter.hasRichContent)
+                fh.Html(
+                  key: ValueKey('rich-chapter-$_chapterIndex'),
+                  data: _chapter.html,
+                  extensions: const [TableHtmlExtension(), SvgHtmlExtension()],
+                  onLinkTap: (url, _, _) => _openLink(url),
+                  style: {
+                    'body': fh.Style(
+                      margin: fh.Margins.zero,
+                      padding: fh.HtmlPaddings.zero,
+                      fontSize: fh.FontSize(_fontSize),
+                      lineHeight: fh.LineHeight.number(_lineHeight),
+                      color: _readerForeground,
+                      textAlign: _alignment,
+                    ),
+                    'img': fh.Style(width: fh.Width.auto()),
+                    'table': fh.Style(
+                      backgroundColor: Colors.white.withValues(alpha: .35),
+                    ),
+                    'blockquote': fh.Style(
+                      border: const Border(
+                        left: BorderSide(color: AppColors.secondary, width: 3),
+                      ),
+                      padding: fh.HtmlPaddings.only(left: 14),
+                    ),
+                    'pre': fh.Style(
+                      whiteSpace: fh.WhiteSpace.pre,
+                      fontFamily: 'monospace',
+                    ),
+                  },
+                )
+              else
+                Text(
+                  _chapter.content,
+                  textAlign: _alignment,
+                  style: TextStyle(
+                    fontSize: _fontSize,
+                    height: _lineHeight,
+                    color: _readerForeground,
+                    letterSpacing: .35,
+                  ),
+                ),
+              if (_chapterIndex < widget.book.chapters.length - 1) ...[
+                const SizedBox(height: 48),
+                Center(
+                  child: Text(
+                    '下一章 · ${widget.book.chapters[_chapterIndex + 1].title}',
+                    key: const ValueKey('next-chapter-hint'),
+                    style: TextStyle(
+                      color: _readerSecondary,
+                      fontSize: 13,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                ),
+              ],
+            ],
+          ),
         ),
       ),
     ),
@@ -959,7 +1075,7 @@ class _ReaderScreenState extends State<ReaderScreen> {
     return GestureDetector(
       key: const ValueKey('reader-page'),
       behavior: HitTestBehavior.opaque,
-      onTap: () => setState(() => _showControls = !_showControls),
+      onTapUp: _handleReaderTap,
       child: NotificationListener<OverscrollNotification>(
         onNotification: (notification) {
           if (_turningChapter || notification.overscroll.abs() < 12) {
@@ -1028,7 +1144,7 @@ class _ReaderScreenState extends State<ReaderScreen> {
                         _chapter.title,
                         style: TextStyle(
                           fontSize: _fontSize * .78,
-                          color: AppColors.secondary,
+                          color: _readerSecondary,
                         ),
                       ),
                       const SizedBox(height: 18),
@@ -1097,6 +1213,16 @@ class _ReaderScreenState extends State<ReaderScreen> {
       return const Scaffold(body: Center(child: Text('这本书没有可阅读的正文')));
     }
     final chapterProgress = _liveProgress;
+    final darkReader =
+        ThemeData.estimateBrightnessForColor(_effectiveBackground) ==
+        Brightness.dark;
+    final controlSurface = darkReader
+        ? const Color(0xF22A2C31)
+        : Colors.white.withValues(alpha: .96);
+    final controlForeground = darkReader
+        ? const Color(0xFFF7F5F0)
+        : const Color(0xFF282B30);
+    final controlDivider = controlForeground.withValues(alpha: .17);
 
     return Scaffold(
       backgroundColor: _effectiveBackground,
@@ -1108,48 +1234,66 @@ class _ReaderScreenState extends State<ReaderScreen> {
               left: 14,
               right: 14,
               top: 4,
-              child: Row(
-                children: [
-                  IconButton(
-                    key: const ValueKey('reader-back'),
-                    onPressed: () => Navigator.pop(context),
-                    icon: const Icon(
-                      Icons.arrow_back_ios_new_rounded,
-                      size: 20,
-                    ),
-                  ),
-                  Expanded(
-                    child: AnimatedOpacity(
-                      opacity: _showControls ? 1 : 0,
-                      duration: const Duration(milliseconds: 180),
-                      child: Text(
-                        widget.book.title,
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        textAlign: TextAlign.center,
-                        style: TextStyle(fontSize: 13, color: _readerSecondary),
+              child: AnimatedSwitcher(
+                duration: const Duration(milliseconds: 220),
+                child: _showControls
+                    ? Row(
+                        key: const ValueKey('reader-top-controls'),
+                        children: [
+                          IconButton(
+                            key: const ValueKey('reader-back'),
+                            onPressed: () => Navigator.pop(context),
+                            style: IconButton.styleFrom(
+                              foregroundColor: controlForeground,
+                              backgroundColor: controlSurface,
+                            ),
+                            icon: const Icon(
+                              Icons.arrow_back_ios_new_rounded,
+                              size: 20,
+                            ),
+                          ),
+                          Expanded(
+                            child: Text(
+                              widget.book.title,
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              textAlign: TextAlign.center,
+                              style: TextStyle(
+                                fontSize: 13,
+                                color: _readerForeground,
+                                fontWeight: FontWeight.w600,
+                              ),
+                            ),
+                          ),
+                          IconButton(
+                            key: const ValueKey('reader-more-button'),
+                            tooltip: '阅读工具',
+                            onPressed: _showReaderTools,
+                            style: IconButton.styleFrom(
+                              foregroundColor: controlForeground,
+                              backgroundColor: controlSurface,
+                            ),
+                            icon: const Icon(Icons.more_horiz_rounded),
+                          ),
+                        ],
+                      )
+                    : const SizedBox.shrink(
+                        key: ValueKey('reader-top-controls-hidden'),
                       ),
-                    ),
-                  ),
-                  IconButton(
-                    tooltip: '阅读工具',
-                    onPressed: _showReaderTools,
-                    icon: const Icon(Icons.more_horiz_rounded),
-                  ),
-                ],
               ),
             ),
             Positioned(
               left: 28,
               right: 28,
               bottom: 12,
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  AnimatedSwitcher(
-                    duration: const Duration(milliseconds: 180),
-                    child: _showControls
-                        ? Container(
+              child: AnimatedSwitcher(
+                duration: const Duration(milliseconds: 220),
+                child: _showControls
+                    ? Column(
+                        key: const ValueKey('reader-bottom-controls'),
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Container(
                             key: const ValueKey('reader-controls'),
                             margin: const EdgeInsets.only(bottom: 13),
                             padding: const EdgeInsets.symmetric(
@@ -1157,7 +1301,7 @@ class _ReaderScreenState extends State<ReaderScreen> {
                               vertical: 8,
                             ),
                             decoration: BoxDecoration(
-                              color: Colors.white.withValues(alpha: .92),
+                              color: controlSurface,
                               borderRadius: BorderRadius.circular(22),
                               boxShadow: [
                                 BoxShadow(
@@ -1173,23 +1317,25 @@ class _ReaderScreenState extends State<ReaderScreen> {
                                   key: const ValueKey('catalog-button'),
                                   icon: Icons.format_list_bulleted_rounded,
                                   label: '目录',
+                                  foregroundColor: controlForeground,
                                   onTap: _showChapterList,
                                 ),
                                 Container(
                                   width: 1,
                                   height: 24,
-                                  color: AppColors.line,
+                                  color: controlDivider,
                                 ),
                                 _ReaderAction(
                                   key: const ValueKey('settings-button'),
                                   icon: Icons.text_fields_rounded,
                                   label: '设置',
+                                  foregroundColor: controlForeground,
                                   onTap: _showSettings,
                                 ),
                                 Container(
                                   width: 1,
                                   height: 24,
-                                  color: AppColors.line,
+                                  color: controlDivider,
                                 ),
                                 _ReaderAction(
                                   key: const ValueKey('bookmark-button'),
@@ -1201,6 +1347,7 @@ class _ReaderScreenState extends State<ReaderScreen> {
                                       ? Icons.bookmark_rounded
                                       : Icons.bookmark_border_rounded,
                                   label: '书签',
+                                  foregroundColor: controlForeground,
                                   onTap: () {
                                     widget.readingStore.toggleBookmark(
                                       widget.book,
@@ -1213,7 +1360,7 @@ class _ReaderScreenState extends State<ReaderScreen> {
                                 Container(
                                   width: 1,
                                   height: 24,
-                                  color: AppColors.line,
+                                  color: controlDivider,
                                 ),
                                 _ReaderAction(
                                   key: const ValueKey('annotation-button'),
@@ -1223,47 +1370,51 @@ class _ReaderScreenState extends State<ReaderScreen> {
                                   label: _selectedText.trim().isEmpty
                                       ? '批注'
                                       : '添加',
+                                  foregroundColor: controlForeground,
                                   onTap: _selectedText.trim().isEmpty
                                       ? _showAnnotations
                                       : _addAnnotation,
                                 ),
                               ],
                             ),
-                          )
-                        : const SizedBox.shrink(
-                            key: ValueKey('reader-controls-hidden'),
                           ),
-                  ),
-                  Row(
-                    children: [
-                      Text(
-                        '${(chapterProgress.clamp(0, 1) * 100).round()}%',
-                        style: const TextStyle(
-                          fontSize: 12,
-                          color: AppColors.secondary,
-                        ),
+                          Row(
+                            children: [
+                              Text(
+                                '${(chapterProgress.clamp(0, 1) * 100).round()}%',
+                                style: TextStyle(
+                                  fontSize: 12,
+                                  color: _readerSecondary,
+                                ),
+                              ),
+                              const SizedBox(width: 12),
+                              Expanded(
+                                child: Slider(
+                                  key: const ValueKey('reader-progress-slider'),
+                                  value: chapterProgress.clamp(0, 1),
+                                  onChanged: (value) {
+                                    setState(() => _liveProgress = value);
+                                  },
+                                  onChangeEnd: _seekOverall,
+                                ),
+                              ),
+                              const SizedBox(width: 12),
+                              Text(
+                                _isPaged && _textPages.isNotEmpty
+                                    ? '${_pageIndex + 1}/${_textPages.length}'
+                                    : '${_chapterIndex + 1}/${widget.book.chapters.length}',
+                                style: TextStyle(
+                                  fontSize: 12,
+                                  color: _readerSecondary,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ],
+                      )
+                    : const SizedBox.shrink(
+                        key: ValueKey('reader-bottom-controls-hidden'),
                       ),
-                      const SizedBox(width: 12),
-                      Expanded(
-                        child: Slider(
-                          key: const ValueKey('reader-progress-slider'),
-                          value: chapterProgress.clamp(0, 1),
-                          onChanged: (value) {
-                            setState(() => _liveProgress = value);
-                          },
-                          onChangeEnd: _seekOverall,
-                        ),
-                      ),
-                      const SizedBox(width: 12),
-                      Text(
-                        _isPaged && _textPages.isNotEmpty
-                            ? '${_pageIndex + 1}/${_textPages.length}'
-                            : '${_chapterIndex + 1}/${widget.book.chapters.length}',
-                        style: TextStyle(fontSize: 12, color: _readerSecondary),
-                      ),
-                    ],
-                  ),
-                ],
               ),
             ),
           ],
@@ -1278,11 +1429,13 @@ class _ReaderAction extends StatelessWidget {
     super.key,
     required this.icon,
     required this.label,
+    required this.foregroundColor,
     required this.onTap,
   });
 
   final IconData icon;
   final String label;
+  final Color foregroundColor;
   final VoidCallback onTap;
 
   @override
@@ -1296,13 +1449,14 @@ class _ReaderAction extends StatelessWidget {
           child: Column(
             mainAxisAlignment: MainAxisAlignment.center,
             children: [
-              Icon(icon, size: 19),
+              Icon(icon, size: 20, color: foregroundColor),
               const SizedBox(height: 2),
               Text(
                 label,
-                style: const TextStyle(
+                style: TextStyle(
+                  color: foregroundColor,
                   fontSize: 11,
-                  fontWeight: FontWeight.w500,
+                  fontWeight: FontWeight.w700,
                 ),
               ),
             ],

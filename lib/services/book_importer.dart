@@ -579,7 +579,7 @@ abstract final class BookImporter {
   static ({String title, String author}) _metadataFromFileName(String name) {
     final title = _cleanTitle(name);
     final match = RegExp(r'^《(.+?)》\s*作者\s*[：:]\s*(.+)$').firstMatch(title);
-    if (match == null) return (title: title, author: '本地导入');
+    if (match == null) return (title: title, author: '');
     return (title: match.group(1)!.trim(), author: match.group(2)!.trim());
   }
 

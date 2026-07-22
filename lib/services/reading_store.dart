@@ -207,6 +207,7 @@ class ReaderPreferences {
     this.eyeCare = false,
     this.pageTurn = '上下滚动',
     this.appThemeMode = 'system',
+    this.autoScrollSpeed = 1.5,
   });
 
   final double fontSize;
@@ -216,6 +217,7 @@ class ReaderPreferences {
   final bool eyeCare;
   final String pageTurn;
   final String appThemeMode;
+  final double autoScrollSpeed;
 
   ReaderPreferences copyWith({
     double? fontSize,
@@ -225,6 +227,7 @@ class ReaderPreferences {
     bool? eyeCare,
     String? pageTurn,
     String? appThemeMode,
+    double? autoScrollSpeed,
   }) => ReaderPreferences(
     fontSize: fontSize ?? this.fontSize,
     lineHeight: lineHeight ?? this.lineHeight,
@@ -233,6 +236,7 @@ class ReaderPreferences {
     eyeCare: eyeCare ?? this.eyeCare,
     pageTurn: pageTurn ?? this.pageTurn,
     appThemeMode: appThemeMode ?? this.appThemeMode,
+    autoScrollSpeed: autoScrollSpeed ?? this.autoScrollSpeed,
   );
 
   ThemeMode get themeMode => switch (appThemeMode) {
@@ -249,6 +253,7 @@ class ReaderPreferences {
     'eyeCare': eyeCare,
     'pageTurn': pageTurn,
     'appThemeMode': appThemeMode,
+    'autoScrollSpeed': autoScrollSpeed,
   };
 
   factory ReaderPreferences.fromJson(Map<String, Object?> json) =>
@@ -264,6 +269,7 @@ class ReaderPreferences {
         eyeCare: json['eyeCare'] as bool? ?? false,
         pageTurn: json['pageTurn'] as String? ?? '上下滚动',
         appThemeMode: json['appThemeMode'] as String? ?? 'system',
+        autoScrollSpeed: (json['autoScrollSpeed'] as num?)?.toDouble() ?? 1.5,
       );
 }
 

@@ -148,8 +148,12 @@ class _ShowcaseToolbar extends StatelessWidget {
                     const SizedBox(width: 16),
                     Expanded(
                       child: Text(
-                        '${book.author} · ${book.format.name.toUpperCase()}'
-                        '${book.format == BookFormat.txt ? ' · ${book.chapters.length} 章' : ''}',
+                        [
+                          if (book.displayAuthor.isNotEmpty) book.displayAuthor,
+                          book.format.name.toUpperCase(),
+                          if (book.format == BookFormat.txt)
+                            '${book.chapters.length} 章',
+                        ].join(' · '),
                       ),
                     ),
                   ],
@@ -262,8 +266,8 @@ class _GlassIconButton extends StatelessWidget {
       onPressed: onPressed,
       style: IconButton.styleFrom(
         foregroundColor: Colors.white,
-        backgroundColor: Colors.white.withValues(alpha: .14),
-        side: BorderSide(color: Colors.white.withValues(alpha: .18)),
+        backgroundColor: Colors.black.withValues(alpha: .28),
+        side: BorderSide(color: Colors.white.withValues(alpha: .48)),
       ),
       icon: Icon(icon, size: 19),
     );
@@ -339,17 +343,27 @@ class _BookInformationPanel extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final percent = (book.progress * 100).round();
+    final theme = Theme.of(context);
+    final isDark = theme.brightness == Brightness.dark;
+    final foreground = theme.colorScheme.onSurface;
+    final secondary = foreground.withValues(alpha: .72);
+    final panelColor = isDark
+        ? Color.lerp(theme.colorScheme.surface, book.palette.last, .1)!
+        : Color.lerp(Colors.white, book.palette[1], .08)!;
+    final readableAccent = isDark
+        ? Color.lerp(accent, Colors.white, .46)!
+        : accent;
     return Container(
       width: double.infinity,
       decoration: BoxDecoration(
-        color: Color.lerp(
-          Colors.white,
-          book.palette[1],
-          .08,
-        )!.withValues(alpha: .96),
+        color: panelColor.withValues(alpha: .97),
         borderRadius: const BorderRadius.vertical(top: Radius.circular(34)),
         border: Border(
-          top: BorderSide(color: Colors.white.withValues(alpha: .78)),
+          top: BorderSide(
+            color: isDark
+                ? Colors.white.withValues(alpha: .16)
+                : Colors.white.withValues(alpha: .78),
+          ),
         ),
         boxShadow: [
           BoxShadow(
@@ -373,22 +387,25 @@ class _BookInformationPanel extends StatelessWidget {
                     children: [
                       Text(
                         book.title,
-                        style: const TextStyle(
+                        style: TextStyle(
+                          color: foreground,
                           fontSize: 27,
                           height: 1.15,
                           fontWeight: FontWeight.w800,
                           letterSpacing: .5,
                         ),
                       ),
-                      const SizedBox(height: 7),
-                      Text(
-                        book.author,
-                        style: TextStyle(
-                          color: accent.withValues(alpha: .68),
-                          fontSize: 14,
-                          fontWeight: FontWeight.w500,
+                      if (book.displayAuthor.isNotEmpty) ...[
+                        const SizedBox(height: 7),
+                        Text(
+                          book.displayAuthor,
+                          style: TextStyle(
+                            color: secondary,
+                            fontSize: 14,
+                            fontWeight: FontWeight.w600,
+                          ),
                         ),
-                      ),
+                      ],
                     ],
                   ),
                 ),
@@ -398,13 +415,13 @@ class _BookInformationPanel extends StatelessWidget {
                     vertical: 7,
                   ),
                   decoration: BoxDecoration(
-                    color: accent.withValues(alpha: .08),
+                    color: readableAccent.withValues(alpha: .12),
                     borderRadius: BorderRadius.circular(13),
                   ),
                   child: Text(
                     '$percent%',
                     style: TextStyle(
-                      color: accent,
+                      color: readableAccent,
                       fontSize: 14,
                       fontWeight: FontWeight.w700,
                     ),
@@ -418,8 +435,8 @@ class _BookInformationPanel extends StatelessWidget {
               child: LinearProgressIndicator(
                 value: book.progress,
                 minHeight: 4,
-                backgroundColor: accent.withValues(alpha: .08),
-                color: accent.withValues(alpha: .72),
+                backgroundColor: readableAccent.withValues(alpha: .12),
+                color: readableAccent,
               ),
             ),
             const SizedBox(height: 19),
@@ -427,11 +444,7 @@ class _BookInformationPanel extends StatelessWidget {
               description,
               maxLines: 3,
               overflow: TextOverflow.ellipsis,
-              style: TextStyle(
-                color: Colors.black.withValues(alpha: .58),
-                height: 1.7,
-                fontSize: 13,
-              ),
+              style: TextStyle(color: secondary, height: 1.7, fontSize: 13),
             ),
             const SizedBox(height: 18),
             Row(
@@ -455,7 +468,7 @@ class _BookInformationPanel extends StatelessWidget {
                 key: const ValueKey('continue-reading-button'),
                 onPressed: onContinue,
                 style: FilledButton.styleFrom(
-                  backgroundColor: accent,
+                  backgroundColor: readableAccent,
                   foregroundColor: Colors.white,
                   shape: RoundedRectangleBorder(
                     borderRadius: BorderRadius.circular(18),
@@ -484,23 +497,31 @@ class _BookFact extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final colorScheme = Theme.of(context).colorScheme;
     return Flexible(
       child: Container(
         padding: const EdgeInsets.symmetric(horizontal: 11, vertical: 8),
         decoration: BoxDecoration(
-          color: Colors.black.withValues(alpha: .035),
+          color: colorScheme.onSurface.withValues(alpha: .07),
           borderRadius: BorderRadius.circular(12),
         ),
         child: Row(
           mainAxisSize: MainAxisSize.min,
           children: [
-            Icon(icon, size: 15, color: Colors.black45),
+            Icon(
+              icon,
+              size: 15,
+              color: colorScheme.onSurface.withValues(alpha: .68),
+            ),
             const SizedBox(width: 6),
             Flexible(
               child: Text(
                 value,
                 overflow: TextOverflow.ellipsis,
-                style: const TextStyle(fontSize: 11.5, color: Colors.black54),
+                style: TextStyle(
+                  fontSize: 11.5,
+                  color: colorScheme.onSurface.withValues(alpha: .72),
+                ),
               ),
             ),
           ],

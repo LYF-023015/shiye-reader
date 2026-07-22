@@ -44,8 +44,7 @@ class BookCover extends StatelessWidget {
                     color: book.palette.last,
                     fontSize: width * .11,
                     height: 1.35,
-                    fontFamily: 'ShiyeXingshu',
-                    fontWeight: FontWeight.w700,
+                    fontWeight: FontWeight.w800,
                     letterSpacing: .4,
                     shadows: [
                       Shadow(
@@ -116,10 +115,9 @@ class BookCoverArtwork extends StatelessWidget {
                     textAlign: TextAlign.center,
                     style: TextStyle(
                       color: Colors.white,
-                      fontFamily: 'ShiyeXingshu',
                       fontSize: width * .145,
                       height: 1.08,
-                      fontWeight: FontWeight.w400,
+                      fontWeight: FontWeight.w800,
                       letterSpacing: width * .005,
                       shadows: const [
                         Shadow(
@@ -133,23 +131,24 @@ class BookCoverArtwork extends StatelessWidget {
                   ),
                 ),
               ),
-              Positioned(
-                left: width * .12,
-                right: width * .12,
-                bottom: height * .12,
-                child: Text(
-                  book.author,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  textAlign: TextAlign.center,
-                  style: TextStyle(
-                    color: Colors.white.withValues(alpha: .86),
-                    fontSize: width * .06,
-                    letterSpacing: 1.2,
-                    fontWeight: FontWeight.w600,
+              if (book.displayAuthor.isNotEmpty)
+                Positioned(
+                  left: width * .12,
+                  right: width * .12,
+                  bottom: height * .12,
+                  child: Text(
+                    book.displayAuthor,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    textAlign: TextAlign.center,
+                    style: TextStyle(
+                      color: Colors.white.withValues(alpha: .86),
+                      fontSize: width * .06,
+                      letterSpacing: 1.2,
+                      fontWeight: FontWeight.w600,
+                    ),
                   ),
                 ),
-              ),
             ],
           ],
         ),
@@ -282,10 +281,9 @@ class BookCover3D extends StatelessWidget {
                         textAlign: TextAlign.center,
                         style: TextStyle(
                           color: book.palette.last,
-                          fontFamily: 'ShiyeXingshu',
                           fontSize: faceWidth * .13,
                           height: 1.18,
-                          fontWeight: FontWeight.w400,
+                          fontWeight: FontWeight.w800,
                           letterSpacing: 1,
                           shadows: [
                             Shadow(
@@ -296,13 +294,13 @@ class BookCover3D extends StatelessWidget {
                         ),
                       ),
                     ),
-                  if (book.overlayCoverText)
+                  if (book.overlayCoverText && book.displayAuthor.isNotEmpty)
                     Positioned(
                       left: faceWidth * .2,
                       right: faceWidth * .06,
                       bottom: height * .18,
                       child: Text(
-                        book.author,
+                        book.displayAuthor,
                         textAlign: TextAlign.center,
                         style: TextStyle(
                           color: book.palette.last.withValues(alpha: .82),

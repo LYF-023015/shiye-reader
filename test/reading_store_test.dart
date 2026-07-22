@@ -42,7 +42,7 @@ void main() {
       ),
     );
     store.updateReaderPreferences(
-      const ReaderPreferences(fontSize: 22, eyeCare: true),
+      const ReaderPreferences(fontSize: 22, eyeCare: true, autoScrollSpeed: 2),
     );
     await store.flush();
     store.dispose();
@@ -56,6 +56,7 @@ void main() {
     expect(state.annotations.single.note, '我的批注');
     expect(restored.readerPreferences.fontSize, 22);
     expect(restored.readerPreferences.eyeCare, isTrue);
+    expect(restored.readerPreferences.autoScrollSpeed, 2);
     restored.dispose();
   });
 

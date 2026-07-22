@@ -801,7 +801,11 @@ class _LibraryScreenState extends State<LibraryScreen>
               style: TextStyle(color: _onSurface(context)),
             ),
             subtitle: Text(
-              '${book.author} · ${(widget.readingStore.stateFor(book).progress * 100).round()}% · ${_formatBytes(book.fileSize)}',
+              [
+                if (book.displayAuthor.isNotEmpty) book.displayAuthor,
+                '${(widget.readingStore.stateFor(book).progress * 100).round()}%',
+                _formatBytes(book.fileSize),
+              ].join(' · '),
               style: TextStyle(color: _onSurfaceSubdued(context)),
             ),
             trailing: selected
@@ -875,15 +879,16 @@ class _LibraryScreenState extends State<LibraryScreen>
                   fontWeight: FontWeight.w600,
                 ),
               ),
-              Text(
-                book.author,
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                style: TextStyle(
-                  color: _onSurfaceSubdued(context),
-                  fontSize: 12,
+              if (book.displayAuthor.isNotEmpty)
+                Text(
+                  book.displayAuthor,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                    color: _onSurfaceSubdued(context),
+                    fontSize: 12,
+                  ),
                 ),
-              ),
             ],
           ),
         );
@@ -1657,7 +1662,10 @@ class _SelectedBookOverlay extends StatelessWidget {
                 ),
                 SizedBox(height: compact ? 1 : 5),
                 Text(
-                  '${book.author}  ·  已读 ${(book.progress * 100).round()}%',
+                  [
+                    if (book.displayAuthor.isNotEmpty) book.displayAuthor,
+                    '已读 ${(book.progress * 100).round()}%',
+                  ].join('  ·  '),
                   textAlign: TextAlign.center,
                   style: const TextStyle(
                     color: Color(0x82FFFFFF),

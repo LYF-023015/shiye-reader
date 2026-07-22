@@ -46,6 +46,8 @@ class _NativeBookModelState extends State<NativeBookModel> {
   void didUpdateWidget(covariant NativeBookModel oldWidget) {
     super.didUpdateWidget(oldWidget);
     if (oldWidget.book.id != widget.book.id ||
+        oldWidget.book.title != widget.book.title ||
+        oldWidget.book.author != widget.book.author ||
         oldWidget.book.coverBytes != widget.book.coverBytes ||
         oldWidget.book.coverTemplate != widget.book.coverTemplate) {
       _coverTexture = _loadCoverTexture();
@@ -62,10 +64,6 @@ class _NativeBookModelState extends State<NativeBookModel> {
       final data = await rootBundle.load(asset);
       source = data.buffer.asUint8List(data.offsetInBytes, data.lengthInBytes);
     }
-    final hasOriginalArtwork =
-        (widget.book.coverBytes?.isNotEmpty ?? false) ||
-        widget.book.coverAsset != null;
-    if (hasOriginalArtwork && !widget.book.overlayCoverText) return source;
     return _composeCoverTexture(source);
   }
 
@@ -94,10 +92,9 @@ class _NativeBookModelState extends State<NativeBookModel> {
         text: widget.book.title,
         style: TextStyle(
           color: Colors.white,
-          fontFamily: 'ShiyeXingshu',
           fontSize: width * .14,
           height: 1.08,
-          fontWeight: FontWeight.w400,
+          fontWeight: FontWeight.w800,
           shadows: const [
             Shadow(color: Colors.black54, blurRadius: 12, offset: Offset(0, 3)),
           ],
@@ -112,22 +109,24 @@ class _NativeBookModelState extends State<NativeBookModel> {
       canvas,
       Offset((width - title.width) / 2, height * .4 - title.height / 2),
     );
-    final author = TextPainter(
-      text: TextSpan(
-        text: widget.book.author,
-        style: TextStyle(
-          color: Colors.white.withValues(alpha: .86),
-          fontSize: width * .055,
-          fontWeight: FontWeight.w600,
-          letterSpacing: 2,
+    if (widget.book.displayAuthor.isNotEmpty) {
+      final author = TextPainter(
+        text: TextSpan(
+          text: widget.book.displayAuthor,
+          style: TextStyle(
+            color: Colors.white.withValues(alpha: .9),
+            fontSize: width * .055,
+            fontWeight: FontWeight.w600,
+            letterSpacing: 2,
+          ),
         ),
-      ),
-      textAlign: TextAlign.center,
-      textDirection: TextDirection.ltr,
-      maxLines: 1,
-      ellipsis: '…',
-    )..layout(maxWidth: width * .72);
-    author.paint(canvas, Offset((width - author.width) / 2, height * .83));
+        textAlign: TextAlign.center,
+        textDirection: TextDirection.ltr,
+        maxLines: 1,
+        ellipsis: '…',
+      )..layout(maxWidth: width * .72);
+      author.paint(canvas, Offset((width - author.width) / 2, height * .83));
+    }
     final rendered = await recorder.endRecording().toImage(
       image.width,
       image.height,

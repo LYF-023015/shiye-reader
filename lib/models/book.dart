@@ -112,6 +112,13 @@ class Book {
   String get id =>
       storageId.isEmpty ? '${title.trim()}::${author.trim()}' : storageId;
 
+  /// Hides legacy placeholder metadata from user-facing book cards.
+  String get displayAuthor {
+    final value = author.trim();
+    if (value == '本地导入' || value == '作者未知') return '';
+    return value;
+  }
+
   Book copyWith({
     String? title,
     String? author,
@@ -191,7 +198,7 @@ class Book {
     return Book(
       storageId: json['id'] as String? ?? '',
       title: json['title'] as String? ?? '未命名书籍',
-      author: json['author'] as String? ?? '本地导入',
+      author: json['author'] as String? ?? '',
       lastRead: json['lastRead'] as String? ?? '尚未阅读',
       progress: (json['progress'] as num?)?.toDouble() ?? 0,
       palette: rawPalette.isEmpty
