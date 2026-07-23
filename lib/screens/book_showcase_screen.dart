@@ -41,12 +41,34 @@ class BookShowcaseScreen extends StatelessWidget {
     );
   }
 
+  int get _currentChapterIndex {
+    if (book.chapters.isEmpty) return 0;
+    final scaled = (book.progress * book.chapters.length).floor();
+    return scaled.clamp(0, book.chapters.length - 1);
+  }
+
+  String get _currentChapterTitle =>
+      book.chapters.isEmpty ? '' : book.chapters[_currentChapterIndex].title;
+
   String get _description {
-    final fullText = book.chapters.first.content;
-    final preview = fullText.length > 1600
-        ? fullText.substring(0, 1600)
-        : fullText;
-    final source = preview.replaceAll(RegExp(r'\s+'), ' ').trim();
+    if (book.chapters.isEmpty) return '';
+    final chapter = book.chapters[_currentChapterIndex];
+    final content = chapter.content.replaceAll(RegExp(r'\s+'), ' ').trim();
+    if (content.isEmpty) return chapter.title;
+    // Estimate the within-chapter position from the overall progress so the
+    // preview opens near where the reader actually is, snapping to a sentence
+    // boundary for a clean start.
+    final local = ((book.progress * book.chapters.length) - _currentChapterIndex)
+        .clamp(0.0, 1.0);
+    var start = (local * content.length).floor();
+    if (start > 0) {
+      final boundary = content.lastIndexOf(RegExp(r'[。！？.!?]'), start);
+      if (boundary > 0) start = boundary + 1;
+    }
+    final window = content.substring(start.clamp(0, content.length));
+    final source = window.trim().isEmpty
+        ? content.substring(0, content.length < 108 ? content.length : 108)
+        : window.trim();
     if (source.length <= 108) return source;
     return '${source.substring(0, 108)}……';
   }
@@ -88,6 +110,7 @@ class BookShowcaseScreen extends StatelessWidget {
                             flex: 10,
                             child: _BookInformationPanel(
                               book: book,
+                              currentChapterTitle: _currentChapterTitle,
                               description: _description,
                               accent: dark,
                               onContinue: () => _continueReading(context),
@@ -136,8 +159,19 @@ class _ShowcaseToolbar extends StatelessWidget {
                   ),
                   title: Text(bookmarked ? '取消第一章书签' : '收藏第一章'),
                   onTap: () {
+                    final wasBookmarked = bookmarked;
                     readingStore.toggleBookmark(book, 0);
                     Navigator.pop(sheetContext);
+                    if (!context.mounted) return;
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      SnackBar(
+                        content: Text(
+                          wasBookmarked
+                              ? '已移除《${book.title}》第一章书签'
+                              : '已收藏《${book.title}》第一章 · 在阅读界面打开目录可查看与跳转',
+                        ),
+                      ),
+                    );
                   },
                 ),
               Padding(
@@ -330,12 +364,14 @@ class _BookStage extends StatelessWidget {
 class _BookInformationPanel extends StatelessWidget {
   const _BookInformationPanel({
     required this.book,
+    required this.currentChapterTitle,
     required this.description,
     required this.accent,
     required this.onContinue,
   });
 
   final Book book;
+  final String currentChapterTitle;
   final String description;
   final Color accent;
   final VoidCallback onContinue;
@@ -439,10 +475,35 @@ class _BookInformationPanel extends StatelessWidget {
                 color: readableAccent,
               ),
             ),
-            const SizedBox(height: 19),
+            const SizedBox(height: 17),
+            Row(
+              children: [
+                Icon(
+                  Icons.menu_book_rounded,
+                  size: 14,
+                  color: readableAccent,
+                ),
+                const SizedBox(width: 6),
+                Flexible(
+                  child: Text(
+                    currentChapterTitle.isEmpty
+                        ? '继续阅读'
+                        : '读到 · $currentChapterTitle',
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(
+                      color: readableAccent,
+                      fontSize: 13,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 9),
             Text(
               description,
-              maxLines: 3,
+              maxLines: 4,
               overflow: TextOverflow.ellipsis,
               style: TextStyle(color: secondary, height: 1.7, fontSize: 13),
             ),

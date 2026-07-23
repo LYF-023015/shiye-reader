@@ -110,4 +110,48 @@ void main() {
     expect(find.text('第二章'), findsOneWidget);
     expect(find.textContaining('第二章已经无缝接入'), findsOneWidget);
   });
+
+  testWidgets('上下滚动连续显示所有章节正文', (tester) async {
+    final book = _book(
+      chapters: [
+        const Chapter(title: '第一章', content: '第一章正文内容在这里。'),
+        const Chapter(title: '第二章', content: '第二章紧随其后，无缝衔接。'),
+      ],
+    );
+    await pumpReader(tester, book: book);
+    await tester.pump(const Duration(milliseconds: 500));
+
+    // Continuous scroll renders every chapter together in one view, so both
+    // chapters' titles and bodies exist without any chapter-boundary action.
+    expect(find.text('第一章'), findsOneWidget);
+    expect(find.text('第二章'), findsOneWidget);
+    expect(find.textContaining('第一章正文内容在这里'), findsOneWidget);
+    expect(find.textContaining('第二章紧随其后，无缝衔接'), findsOneWidget);
+  });
+
+  testWidgets('选中文本后批注入口保持可见', (tester) async {
+    await pumpReader(tester);
+
+    // Let the controls auto-hide first.
+    await tester.pump(const Duration(seconds: 4));
+    await tester.pump(const Duration(milliseconds: 250));
+    expect(
+      find.byKey(const ValueKey('reader-bottom-controls-hidden')),
+      findsOneWidget,
+    );
+
+    // Long-press and drag across the body text to create a selection.
+    final textCenter = tester.getCenter(find.textContaining('这是用于测试'));
+    final gesture = await tester.startGesture(textCenter);
+    await tester.pump(const Duration(milliseconds: 600));
+    await gesture.moveTo(Offset(textCenter.dx + 120, textCenter.dy));
+    await tester.pump();
+    await gesture.up();
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 50));
+
+    // Selecting text must surface the annotation controls again.
+    expect(find.byKey(const ValueKey('reader-controls')), findsOneWidget);
+    expect(find.byKey(const ValueKey('annotation-button')), findsOneWidget);
+  });
 }

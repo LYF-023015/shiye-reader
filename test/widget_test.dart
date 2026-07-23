@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:reading_app/main.dart';
 import 'package:reading_app/models/book.dart';
+import 'package:reading_app/screens/book_showcase_screen.dart';
 import 'package:reading_app/screens/library_screen.dart';
 import 'package:reading_app/services/reading_store.dart';
 
@@ -200,4 +201,106 @@ void main() {
     await tester.pumpAndSettle();
     expect(find.textContaining('过去30天'), findsOneWidget);
   });
+
+  testWidgets('两本书时书架不循环且尽头禁用翻页', (tester) async {
+    await setPhoneSize(tester);
+    final store = ReadingStore.memory();
+    addTearDown(store.dispose);
+    final books = [
+      for (final entry in const [('书甲', 0), ('书乙', 1)])
+        Book(
+          title: entry.$1,
+          author: '作者',
+          lastRead: '尚未阅读',
+          progress: 0,
+          palette: const [
+            Color(0xFF78BDD4),
+            Color(0xFFDCECF1),
+            Color(0xFF173B4B),
+          ],
+          coverMark: entry.$1,
+          overlayCoverText: true,
+          coverTemplate: entry.$2,
+          chapters: const [Chapter(title: '正文', content: '正文内容')],
+        ),
+    ];
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: LibraryScreen(
+            books: books,
+            readingStore: store,
+            warmPresetCovers: false,
+          ),
+        ),
+      ),
+    );
+    for (var frame = 0; frame < 120; frame++) {
+      await tester.pump(const Duration(milliseconds: 16));
+      if (find.byKey(const ValueKey('coverflow-ready')).evaluate().isNotEmpty) {
+        break;
+      }
+    }
+    expect(find.byKey(const ValueKey('coverflow-ready')), findsOneWidget);
+
+    // On the first book: previous is disabled, next is enabled.
+    expect(
+      _shelfButtonEnabled(tester, const ValueKey('previous-book-button')),
+      isFalse,
+    );
+    expect(
+      _shelfButtonEnabled(tester, const ValueKey('next-book-button')),
+      isTrue,
+    );
+
+    await tester.tap(find.byKey(const ValueKey('next-book-button')));
+    await pumpAnimation(tester);
+
+    // On the last book: next is disabled (no looping back to the first).
+    expect(
+      _shelfButtonEnabled(tester, const ValueKey('next-book-button')),
+      isFalse,
+    );
+    expect(
+      _shelfButtonEnabled(tester, const ValueKey('previous-book-button')),
+      isTrue,
+    );
+  });
+
+  testWidgets('书籍展厅显示当前阅读章节而非书的开头', (tester) async {
+    await setPhoneSize(tester);
+    final store = ReadingStore.memory();
+    addTearDown(store.dispose);
+    final book = Book(
+      title: '展厅测试书',
+      author: '作者',
+      lastRead: '尚未阅读',
+      progress: 0.34,
+      palette: const [Color(0xFF78BDD4), Color(0xFFDCECF1), Color(0xFF173B4B)],
+      coverMark: '展厅测试书',
+      overlayCoverText: true,
+      chapters: const [
+        Chapter(title: '第一章', content: '这是书开头的文字，不应该在展厅显示。'),
+        Chapter(title: '第二章', content: '这是当前阅读到第二章的开头正文内容。'),
+        Chapter(title: '第三章', content: '这是后面尚未读到的章节。'),
+      ],
+    );
+    await tester.pumpWidget(
+      MaterialApp(
+        home: BookShowcaseScreen(book: book, readingStore: store),
+      ),
+    );
+    await tester.pump();
+
+    expect(find.text('读到 · 第二章'), findsOneWidget);
+    expect(find.textContaining('这是当前阅读到'), findsOneWidget);
+    expect(find.textContaining('不应该在展厅显示'), findsNothing);
+  });
+}
+
+bool _shelfButtonEnabled(WidgetTester tester, Key key) {
+  final button = tester.widget<IconButton>(
+    find.descendant(of: find.byKey(key), matching: find.byType(IconButton)),
+  );
+  return button.onPressed != null;
 }

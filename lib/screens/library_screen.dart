@@ -192,6 +192,16 @@ class _LibraryScreenState extends State<LibraryScreen>
     return ((virtualIndex % count) + count) % count;
   }
 
+  /// The carousel only loops when there are at least three books. With one or
+  /// two books looping produces duplicated neighbour cards (the same cover on
+  /// both sides), so it is clamped to a bounded range instead.
+  static bool _isLooping(int count) => count >= 3;
+
+  static double _clampShelf(double value, int count) {
+    if (count < 3) return value.clamp(0.0, math.max(0, count - 1).toDouble());
+    return value;
+  }
+
   Future<void> _animateShelfTo(
     double target, {
     Duration? duration,
@@ -226,7 +236,10 @@ class _LibraryScreenState extends State<LibraryScreen>
       18.0,
     );
     final projectedPages = (velocityPages * .13).clamp(-3.5, 3.5);
-    final target = (_shelfPosition.value + projectedPages).roundToDouble();
+    final target = _clampShelf(
+      (_shelfPosition.value + projectedPages).roundToDouble(),
+      books.length,
+    );
     _motionController.stop();
     _motionController.value = _shelfPosition.value;
     final simulation = SpringSimulation(
@@ -248,7 +261,15 @@ class _LibraryScreenState extends State<LibraryScreen>
 
   Future<void> _stepShelf(List<Book> books, int direction) async {
     if (books.isEmpty) return;
-    final target = _shelfPosition.value.round() + direction;
+    final current = _shelfPosition.value.round();
+    final target = _clampShelf(
+      (current + direction).toDouble(),
+      books.length,
+    ).round();
+    if (target == current) {
+      HapticFeedback.selectionClick();
+      return;
+    }
     await _animateShelfTo(
       target.toDouble(),
       duration: const Duration(milliseconds: 260),
@@ -264,7 +285,10 @@ class _LibraryScreenState extends State<LibraryScreen>
 
   void _touchBookAt(double localX, double focusX, int count) {
     if (count <= 0) return;
-    final virtualIndex = _virtualIndexAt(localX, focusX);
+    final raw = _virtualIndexAt(localX, focusX);
+    final virtualIndex = _isLooping(count)
+        ? raw
+        : _clampShelf(raw.toDouble(), count).round();
     if (_touchedVirtualIndex.value != virtualIndex) {
       _touchedVirtualIndex.value = virtualIndex;
       HapticFeedback.selectionClick();
@@ -277,7 +301,10 @@ class _LibraryScreenState extends State<LibraryScreen>
     List<Book> books,
   ) async {
     if (books.isEmpty) return;
-    final virtualIndex = _virtualIndexAt(localX, focusX);
+    final raw = _virtualIndexAt(localX, focusX);
+    final virtualIndex = _isLooping(books.length)
+        ? raw
+        : _clampShelf(raw.toDouble(), books.length).round();
     _touchedVirtualIndex.value = virtualIndex;
     await _animateShelfTo(
       virtualIndex.toDouble(),
@@ -1045,10 +1072,16 @@ class _LibraryScreenState extends State<LibraryScreen>
                                 index: safeIndex,
                                 count: books.length,
                                 onOpen: () => _openBook(books[safeIndex]),
-                                onPrevious: books.length < 2
+                                onPrevious: books.length < 2 ||
+                                        (_isLooping(books.length)
+                                            ? false
+                                            : safeIndex <= 0)
                                     ? null
                                     : () => _stepShelf(books, -1),
-                                onNext: books.length < 2
+                                onNext: books.length < 2 ||
+                                        (_isLooping(books.length)
+                                            ? false
+                                            : safeIndex >= books.length - 1)
                                     ? null
                                     : () => _stepShelf(books, 1),
                                 compact:
@@ -1363,27 +1396,36 @@ class _CoverFlowQueue extends StatelessWidget {
                   ? shelfPosition.value
                   : fallbackIndex.toDouble();
               final center = page.floor();
+              final loop = _LibraryScreenState._isLooping(books.length);
               // Keep recycled entries outside the visible stage to avoid edge
               // flashes while a transformed card crosses an integer page.
               final radius = books.length == 1 ? 0 : 4;
+              final first = loop ? center - radius : math.max(0, center - radius);
+              final last = loop
+                  ? center + radius
+                  : math.min(books.length - 1, center + radius);
               final touched = touchedVirtualIndex.value;
-              final committedVirtualIndex = books.length == 1
+              final committedVirtualIndex = books.length <= 1
                   ? 0
-                  : fallbackIndex +
-                        ((page - fallbackIndex) / books.length).round() *
-                            books.length;
+                  : loop
+                      ? fallbackIndex +
+                            ((page - fallbackIndex) / books.length).round() *
+                                books.length
+                      : page.round().clamp(0, books.length - 1);
               final entries = <_FlowEntry>[
                 for (
-                  var virtualIndex = center - radius;
-                  virtualIndex <= center + radius;
+                  var virtualIndex = first;
+                  virtualIndex <= last;
                   virtualIndex++
                 )
                   _FlowEntry(
                     virtualIndex: virtualIndex,
-                    bookIndex: _LibraryScreenState._loopIndex(
-                      virtualIndex,
-                      books.length,
-                    ),
+                    bookIndex: loop
+                        ? _LibraryScreenState._loopIndex(
+                            virtualIndex,
+                            books.length,
+                          )
+                        : virtualIndex,
                     pose: _coverFlowPose(virtualIndex - page),
                     touched: virtualIndex == touched,
                   ),

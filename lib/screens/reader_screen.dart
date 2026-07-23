@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_html/flutter_html.dart' as fh;
 import 'package:flutter_html_svg/flutter_html_svg.dart';
@@ -54,10 +55,19 @@ class _ReaderScreenState extends State<ReaderScreen> {
   bool _autoScrolling = false;
   late double _autoScrollSpeed;
   bool _speaking = false;
+  List<String> _ttsChunks = const [];
+  int _ttsChunkIndex = 0;
+  int _ttsChapterIndex = 0;
   List<_TextPage> _textPages = const [];
   String _paginationKey = '';
   int _pageIndex = 0;
   bool _turningChapter = false;
+  // Continuous-scroll geometry: a stable key per chapter block plus cached
+  // pixel offsets/heights so scroll position can be mapped to a chapter.
+  late final List<GlobalKey> _chapterKeys;
+  final Map<int, double> _chapterTopOffsets = {};
+  final Map<int, double> _chapterBlockHeights = {};
+  String _layoutSignature = '';
 
   Chapter get _chapter => widget.book.chapters[_chapterIndex];
 
@@ -72,37 +82,175 @@ class _ReaderScreenState extends State<ReaderScreen> {
 
   Color get _readerSecondary => _readerForeground.withValues(alpha: .76);
 
+  TextStyle get _chapterTitleStyle => TextStyle(
+    fontSize: (_fontSize + 7).clamp(22.0, 30.0),
+    height: 1.3,
+    fontWeight: FontWeight.w800,
+    color: _readerForeground,
+    letterSpacing: .4,
+  );
+
+  Widget _chapterNavPill({
+    Key? key,
+    required String label,
+    required String chapterTitle,
+    required IconData icon,
+    required VoidCallback onTap,
+  }) {
+    return Material(
+      key: key,
+      color: Colors.transparent,
+      child: InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(99),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 11),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(icon, size: 18, color: _readerSecondary),
+              const SizedBox(width: 6),
+              ConstrainedBox(
+                constraints: const BoxConstraints(maxWidth: 180),
+                child: Text(
+                  '$label · $chapterTitle',
+                  overflow: TextOverflow.ellipsis,
+                  maxLines: 1,
+                  style: TextStyle(
+                    color: _readerSecondary,
+                    fontSize: 13,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  void _handleSelectionChanged(String selected) {
+    if (selected == _selectedText) return;
+    final hasSelection = selected.trim().isNotEmpty;
+    if (hasSelection) _controlsTimer?.cancel();
+    setState(() {
+      _selectedText = selected;
+      if (hasSelection) _showControls = true;
+    });
+  }
+
+  String get _currentLayoutSignature =>
+      '${widget.book.chapters.length}:${_fontSize.toStringAsFixed(2)}:'
+      '${_lineHeight.toStringAsFixed(2)}:${_alignment.name}'
+      ':${_readerForeground.toARGB32()}'
+      ':${MediaQuery.sizeOf(context).width.toStringAsFixed(0)}';
+
+  /// Refreshes cached per-chapter pixel offsets/heights. Cheap on the hot path
+  /// because it only recomputes when a layout-affecting setting changes.
+  void _ensureChapterGeometry() {
+    if (_currentLayoutSignature == _layoutSignature) return;
+    _layoutSignature = _currentLayoutSignature;
+    _chapterTopOffsets.clear();
+    _chapterBlockHeights.clear();
+    for (var index = 0; index < widget.book.chapters.length; index++) {
+      final key = _chapterKeys[index];
+      final context = key.currentContext;
+      final object = context?.findRenderObject();
+      if (object == null || !object.attached) continue;
+      final viewport = RenderAbstractViewport.of(object);
+      _chapterTopOffsets[index] =
+          viewport.getOffsetToReveal(object, 0).offset.clamp(0.0, double.infinity);
+      if (object is RenderBox && object.hasSize) {
+        _chapterBlockHeights[index] = object.size.height;
+      }
+    }
+  }
+
+  /// Maps the current scroll offset to a chapter index and a 0..1 progress
+  /// within that chapter. Falls back to the last known chapter when geometry
+  /// is not available yet (e.g. before the first layout).
+  ({int index, double local}) _positionFromScroll() {
+    if (widget.book.chapters.isEmpty) return (index: 0, local: 0.0);
+    _ensureChapterGeometry();
+    final fallbackIndex = _chapterIndex.clamp(
+      0,
+      widget.book.chapters.length - 1,
+    );
+    if (!_scrollController.hasClients || _chapterTopOffsets.isEmpty) {
+      return (index: fallbackIndex, local: _restoreChapterProgress.clamp(0, 1));
+    }
+    // Probe a point just inside the reading area (below the top inset/controls).
+    final probe = _scrollController.offset + 96;
+    var index = 0;
+    for (var entry = 0; entry < widget.book.chapters.length; entry++) {
+      final top = _chapterTopOffsets[entry];
+      if (top == null) continue;
+      if (top <= probe + .1) {
+        index = entry;
+      } else {
+        break;
+      }
+    }
+    final top = _chapterTopOffsets[index] ?? 0.0;
+    final height = _chapterBlockHeights[index] ?? 1.0;
+    final local = height <= 0
+        ? 0.0
+        : ((probe - top) / height).clamp(0.0, 1.0);
+    return (index: index, local: local);
+  }
+
+  int get _liveChapterIndex =>
+      _isPaged ? _chapterIndex : _positionFromScroll().index;
+
   int get _currentCharacterOffset {
     if (_isPaged && _textPages.isNotEmpty) {
       return _textPages[_pageIndex.clamp(0, _textPages.length - 1)].start;
     }
-    if (!_scrollController.hasClients ||
-        _scrollController.position.maxScrollExtent <= 0) {
-      return 0;
-    }
-    final local =
-        (_scrollController.offset / _scrollController.position.maxScrollExtent)
-            .clamp(0.0, 1.0);
-    return (_chapter.content.length * local).round();
+    final pos = _positionFromScroll();
+    final length = widget.book.chapters[pos.index].content.length;
+    return (length * pos.local).round().clamp(0, length);
   }
 
-  int _selectedTextOffset() {
+  /// Locates the selected text across the whole book, returning the chapter it
+  /// lives in and the character offset within it. In continuous scroll a
+  /// selection can sit in any chapter, not just the one at the scroll focus.
+  ({int chapterIndex, int offset}) _resolveSelection() {
     final selected = _selectedText.trim();
-    if (selected.isEmpty) return _currentCharacterOffset;
-    final matches = RegExp(
-      RegExp.escape(selected),
-    ).allMatches(_chapter.content).map((match) => match.start).toList();
-    if (matches.isEmpty) return _currentCharacterOffset;
-    final estimate = _currentCharacterOffset;
-    matches.sort(
-      (a, b) => (a - estimate).abs().compareTo((b - estimate).abs()),
+    final fallback = (
+      chapterIndex: _liveChapterIndex,
+      offset: _currentCharacterOffset,
     );
-    return matches.first;
+    if (selected.isEmpty) return fallback;
+    final anchor = _liveChapterIndex;
+    var bestChapter = -1;
+    var bestOffset = 0;
+    var bestScore = double.infinity;
+    final pattern = RegExp(RegExp.escape(selected));
+    for (var entry = 0; entry < widget.book.chapters.length; entry++) {
+      final content = widget.book.chapters[entry].content;
+      for (final match in pattern.allMatches(content)) {
+        // Prefer the chapter nearest the reading focus, then the earliest hit.
+        final score = (entry - anchor).abs() * 1e9 + match.start.toDouble();
+        if (score < bestScore) {
+          bestScore = score;
+          bestChapter = entry;
+          bestOffset = match.start;
+        }
+      }
+    }
+    if (bestChapter < 0) return fallback;
+    return (chapterIndex: bestChapter, offset: bestOffset);
   }
 
   @override
   void initState() {
     super.initState();
+    _chapterKeys = List.generate(
+      widget.book.chapters.length,
+      (_) => GlobalKey(debugLabel: 'chapter-block'),
+      growable: false,
+    );
     final state = widget.readingStore.stateFor(widget.book);
     final preferences = widget.readingStore.readerPreferences;
     _chapterIndex = (widget.initialChapterIndex ?? state.chapterIndex).clamp(
@@ -128,14 +276,34 @@ class _ReaderScreenState extends State<ReaderScreen> {
       ..setStartHandler(() {
         if (mounted) setState(() => _speaking = true);
       })
+      // Android's TextToSpeech silently drops very long utterances, so the
+      // chapter is split into chunks and chained here as each chunk finishes.
+      // When a chapter ends, reading continues into the next one.
       ..setCompletionHandler(() {
-        if (mounted) setState(() => _speaking = false);
+        if (!mounted) return;
+        if (_ttsChunkIndex < _ttsChunks.length) {
+          _speakNextChunk();
+        } else if (_advanceTtsToNextChapter()) {
+          _followTtsChapter();
+          _speakNextChunk();
+        } else {
+          setState(() => _speaking = false);
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('全书朗读完毕')),
+          );
+        }
       })
       ..setCancelHandler(() {
-        if (mounted) setState(() => _speaking = false);
+        if (!mounted) return;
+        _ttsChunks = const [];
+        _ttsChunkIndex = 0;
+        setState(() => _speaking = false);
       })
       ..setErrorHandler((_) {
-        if (mounted) setState(() => _speaking = false);
+        if (!mounted) return;
+        _ttsChunks = const [];
+        _ttsChunkIndex = 0;
+        setState(() => _speaking = false);
       });
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _restorePosition();
@@ -165,16 +333,22 @@ class _ReaderScreenState extends State<ReaderScreen> {
   }
 
   void _restorePosition() {
-    if (!_scrollController.hasClients || widget.book.chapters.isEmpty) return;
-    final contentLength = _chapter.content.length;
-    final characterProgress =
-        contentLength <= 0 ||
+    if (widget.book.chapters.isEmpty) return;
+    if (_isPaged) return; // paged mode restores inside _buildPagedBody.
+    if (!_scrollController.hasClients) return;
+    _ensureChapterGeometry();
+    final index = _chapterIndex.clamp(0, widget.book.chapters.length - 1);
+    final top = _chapterTopOffsets[index];
+    final height = _chapterBlockHeights[index];
+    if (top == null) return;
+    final contentLength = widget.book.chapters[index].content.length;
+    final fraction = contentLength <= 0 ||
             (_restoreCharacterOffset == 0 && _restoreChapterProgress > 0)
         ? _restoreChapterProgress
         : (_restoreCharacterOffset / contentLength).clamp(0.0, 1.0);
-    _scrollController.jumpTo(
-      _scrollController.position.maxScrollExtent * characterProgress,
-    );
+    final within = (height ?? 0) * fraction;
+    final max = _scrollController.position.maxScrollExtent;
+    _scrollController.jumpTo((top + within).clamp(0.0, max));
   }
 
   void _queueProgressUpdate() {
@@ -186,36 +360,133 @@ class _ReaderScreenState extends State<ReaderScreen> {
 
   Future<void> _toggleSpeech() async {
     if (_speaking) {
-      await _tts.stop();
+      await _stopSpeech();
       return;
     }
-    final offset = _isPaged && _textPages.isNotEmpty
+    final startChapter = _liveChapterIndex.clamp(
+      0,
+      widget.book.chapters.length - 1,
+    );
+    final startOffset = _isPaged && _textPages.isNotEmpty
         ? _textPages[_pageIndex.clamp(0, _textPages.length - 1)].start
         : _currentCharacterOffset;
-    final content = _chapter.content.substring(
-      offset.clamp(0, _chapter.content.length),
-    );
-    if (content.trim().isEmpty) {
+    _ttsChapterIndex = startChapter;
+    final firstChapter = widget.book.chapters[startChapter];
+    final from = startOffset.clamp(0, firstChapter.content.length);
+    _ttsChunks = _splitForSpeech(firstChapter.content.substring(from));
+    // If the reader is already at the end of this chapter, start from the next.
+    if (_ttsChunks.isEmpty && !_advanceTtsToNextChapter()) {
       if (mounted) {
         ScaffoldMessenger.of(
           context,
-        ).showSnackBar(const SnackBar(content: Text('本章已经读完')));
+        ).showSnackBar(const SnackBar(content: Text('没有可朗读的内容')));
       }
       return;
     }
+    _ttsChunkIndex = 0;
+    setState(() => _speaking = true);
     try {
       await _tts.setLanguage('zh-CN');
-      await _tts.setSpeechRate(.48);
-      await _tts.awaitSpeakCompletion(true);
-      final result = await _tts.speak(content);
+      await _tts.setSpeechRate(.46);
+    } on Object {
+      // Language and rate are best-effort; the engine falls back to defaults.
+    }
+    await _speakNextChunk();
+  }
+
+  /// Loads the next non-empty chapter into the TTS queue. Returns false when
+  /// there are no more chapters to read.
+  bool _advanceTtsToNextChapter() {
+    while (_ttsChapterIndex < widget.book.chapters.length - 1) {
+      _ttsChapterIndex++;
+      final chunks = _splitForSpeech(
+        widget.book.chapters[_ttsChapterIndex].content,
+      );
+      if (chunks.isNotEmpty) {
+        _ttsChunks = chunks;
+        _ttsChunkIndex = 0;
+        return true;
+      }
+    }
+    return false;
+  }
+
+  /// Scrolls/pages the view to the chapter currently being read so the reader
+  /// can follow along.
+  void _followTtsChapter() {
+    if (_isPaged) {
+      if (_chapterIndex != _ttsChapterIndex) {
+        setState(() {
+          _chapterIndex = _ttsChapterIndex;
+          _restoreCharacterOffset = 0;
+          _restoreChapterProgress = 0;
+          _paginationKey = '';
+        });
+      }
+      return;
+    }
+    _ensureChapterGeometry();
+    final top = _chapterTopOffsets[_ttsChapterIndex];
+    if (top == null || !_scrollController.hasClients) return;
+    final max = _scrollController.position.maxScrollExtent;
+    final target = top.clamp(0.0, max);
+    _scrollController.animateTo(
+      target,
+      duration: const Duration(milliseconds: 320),
+      curve: Curves.easeOutCubic,
+    );
+    if (_chapterIndex != _ttsChapterIndex) {
+      setState(() => _chapterIndex = _ttsChapterIndex);
+    }
+  }
+
+  Future<void> _speakNextChunk() async {
+    if (_ttsChunkIndex >= _ttsChunks.length) {
+      if (mounted) setState(() => _speaking = false);
+      return;
+    }
+    final chunk = _ttsChunks[_ttsChunkIndex];
+    _ttsChunkIndex++;
+    try {
+      final result = await _tts.speak(chunk);
       if (result != 1) throw StateError('TTS did not start');
     } on Object {
+      await _stopSpeech();
       if (mounted) {
         ScaffoldMessenger.of(
           context,
         ).showSnackBar(const SnackBar(content: Text('系统朗读暂时不可用')));
       }
     }
+  }
+
+  Future<void> _stopSpeech() async {
+    _ttsChunks = const [];
+    _ttsChunkIndex = 0;
+    await _tts.stop();
+    if (mounted) setState(() => _speaking = false);
+  }
+
+  List<String> _splitForSpeech(String text) {
+    const maxChunk = 1400;
+    final trimmed = text.trim();
+    if (trimmed.isEmpty) return const [];
+    final chunks = <String>[];
+    var start = 0;
+    while (start < trimmed.length) {
+      if (trimmed.length - start <= maxChunk) {
+        final chunk = trimmed.substring(start).trim();
+        if (chunk.isNotEmpty) chunks.add(chunk);
+        break;
+      }
+      var end = start + maxChunk;
+      final boundary = trimmed.lastIndexOf(RegExp(r'[。！？!?\n；;]'), end);
+      if (boundary > start + 200) end = boundary + 1;
+      final chunk = trimmed.substring(start, end).trim();
+      if (chunk.isNotEmpty) chunks.add(chunk);
+      start = end;
+    }
+    return chunks;
   }
 
   void _toggleAutoScroll() {
@@ -229,15 +500,6 @@ class _ReaderScreenState extends State<ReaderScreen> {
       if (!mounted || !_scrollController.hasClients) return;
       final position = _scrollController.position;
       if (position.pixels >= position.maxScrollExtent - .5) {
-        if (_chapterIndex < widget.book.chapters.length - 1 &&
-            !_turningChapter) {
-          _turningChapter = true;
-          _jumpToOffset(_chapterIndex + 1, 0);
-          Future<void>.delayed(const Duration(milliseconds: 180), () {
-            _turningChapter = false;
-          });
-          return;
-        }
         _autoScrollTimer?.cancel();
         setState(() => _autoScrolling = false);
         return;
@@ -336,32 +598,50 @@ class _ReaderScreenState extends State<ReaderScreen> {
   }
 
   void _commitProgress({bool rebuild = true}) {
-    if (!_scrollController.hasClients || widget.book.chapters.isEmpty) return;
-    final max = _scrollController.position.maxScrollExtent;
-    final local = max <= 0
-        ? 0.0
-        : (_scrollController.offset / max).clamp(0.0, 1.0);
-    final overall = ((_chapterIndex + local) / widget.book.chapters.length)
-        .clamp(0.0, 1.0);
-    if (rebuild && mounted) setState(() => _liveProgress = overall);
+    if (widget.book.chapters.isEmpty || _isPaged) return;
+    if (!_scrollController.hasClients) return;
+    final pos = _positionFromScroll();
+    final chapterLength = widget.book.chapters[pos.index].content.length;
+    final overall =
+        ((pos.index + pos.local) / widget.book.chapters.length).clamp(0.0, 1.0);
+    _restoreChapterProgress = pos.local;
+    _restoreCharacterOffset = (chapterLength * pos.local).round();
+    final chapterChanged = pos.index != _chapterIndex;
+    // Only rebuild while scrolling when something visible depends on it: the
+    // progress slider/controls are showing, or the current chapter changed.
+    final needsRebuild = rebuild && mounted && (_showControls || chapterChanged);
+    if (needsRebuild) {
+      setState(() {
+        _liveProgress = overall;
+        _chapterIndex = pos.index;
+      });
+    } else {
+      _liveProgress = overall;
+      _chapterIndex = pos.index;
+    }
     widget.readingStore.updateProgress(
       widget.book,
       overall,
-      _chapterIndex,
-      chapterProgress: local,
-      characterOffset: (_chapter.content.length * local).round(),
+      pos.index,
+      chapterProgress: pos.local,
+      characterOffset: _restoreCharacterOffset,
     );
   }
 
   void _jumpToOffset(int chapterIndex, int characterOffset) {
     final chapter = widget.book.chapters[chapterIndex];
     final offset = characterOffset.clamp(0, chapter.content.length);
+    if (_speaking) {
+      _tts.stop();
+      _ttsChunks = const [];
+      _ttsChunkIndex = 0;
+      _speaking = false;
+    }
     setState(() {
       _chapterIndex = chapterIndex;
       _restoreCharacterOffset = offset;
-      _restoreChapterProgress = chapter.content.isEmpty
-          ? 0
-          : offset / chapter.content.length;
+      _restoreChapterProgress =
+          chapter.content.isEmpty ? 0 : offset / chapter.content.length;
       _liveProgress =
           (chapterIndex + _restoreChapterProgress) /
           widget.book.chapters.length;
@@ -723,19 +1003,21 @@ class _ReaderScreenState extends State<ReaderScreen> {
     );
     controller.dispose();
     if (note == null || !mounted) return;
+    final resolved = _resolveSelection();
+    final chapterLength =
+        widget.book.chapters[resolved.chapterIndex].content.length;
     widget.readingStore.addAnnotation(
       widget.book,
       BookAnnotation(
-        chapterIndex: _chapterIndex,
-        chapterProgress:
-            _scrollController.hasClients &&
-                _scrollController.position.maxScrollExtent > 0
-            ? (_scrollController.offset /
-                      _scrollController.position.maxScrollExtent)
-                  .clamp(0, 1)
-            : 0,
-        characterStart: _selectedTextOffset(),
-        characterEnd: _selectedTextOffset() + selected.length,
+        chapterIndex: resolved.chapterIndex,
+        chapterProgress: chapterLength <= 0
+            ? 0.0
+            : (resolved.offset / chapterLength).clamp(0, 1),
+        characterStart: resolved.offset,
+        characterEnd: (resolved.offset + selected.length).clamp(
+          resolved.offset,
+          chapterLength,
+        ),
         selectedText: selected,
         note: note,
         createdAt: DateTime.now(),
@@ -927,119 +1209,83 @@ class _ReaderScreenState extends State<ReaderScreen> {
     );
   }
 
-  bool _handleScrollingNotification(ScrollNotification notification) {
-    if (_turningChapter) return false;
-    var direction = 0;
-    if (notification is OverscrollNotification) {
-      if (notification.overscroll > 12) direction = 1;
-      if (notification.overscroll < -12) direction = -1;
-    } else if (notification is ScrollEndNotification &&
-        notification.metrics.extentAfter <= .5) {
-      direction = 1;
-    }
-    final target = _chapterIndex + direction;
-    if (direction == 0 || target < 0 || target >= widget.book.chapters.length) {
-      return false;
-    }
-    _turningChapter = true;
-    final targetChapter = widget.book.chapters[target];
-    _jumpToOffset(target, direction > 0 ? 0 : targetChapter.content.length);
-    Future<void>.delayed(const Duration(milliseconds: 350), () {
-      _turningChapter = false;
-    });
-    return false;
-  }
-
   Widget _buildScrollingBody() => GestureDetector(
     key: const ValueKey('reader-page'),
     behavior: HitTestBehavior.opaque,
     onTapUp: _handleReaderTap,
-    child: NotificationListener<ScrollNotification>(
-      onNotification: _handleScrollingNotification,
-      child: SingleChildScrollView(
-        controller: _scrollController,
-        padding: const EdgeInsets.fromLTRB(34, 92, 34, 110),
-        child: SelectionArea(
-          onSelectionChanged: (content) {
-            final selected = content?.plainText ?? '';
-            if (selected != _selectedText && mounted) {
-              setState(() => _selectedText = selected);
-            }
-          },
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(
-                _chapter.title,
-                style: TextStyle(
-                  fontSize: _fontSize * .78,
-                  color: _readerSecondary,
-                  letterSpacing: .4,
-                ),
-              ),
-              const SizedBox(height: 26),
-              if (_chapter.hasRichContent)
-                fh.Html(
-                  key: ValueKey('rich-chapter-$_chapterIndex'),
-                  data: _chapter.html,
-                  extensions: const [TableHtmlExtension(), SvgHtmlExtension()],
-                  onLinkTap: (url, _, _) => _openLink(url),
-                  style: {
-                    'body': fh.Style(
-                      margin: fh.Margins.zero,
-                      padding: fh.HtmlPaddings.zero,
-                      fontSize: fh.FontSize(_fontSize),
-                      lineHeight: fh.LineHeight.number(_lineHeight),
-                      color: _readerForeground,
-                      textAlign: _alignment,
-                    ),
-                    'img': fh.Style(width: fh.Width.auto()),
-                    'table': fh.Style(
-                      backgroundColor: Colors.white.withValues(alpha: .35),
-                    ),
-                    'blockquote': fh.Style(
-                      border: const Border(
-                        left: BorderSide(color: AppColors.secondary, width: 3),
-                      ),
-                      padding: fh.HtmlPaddings.only(left: 14),
-                    ),
-                    'pre': fh.Style(
-                      whiteSpace: fh.WhiteSpace.pre,
-                      fontFamily: 'monospace',
-                    ),
-                  },
-                )
-              else
-                Text(
-                  _chapter.content,
-                  textAlign: _alignment,
-                  style: TextStyle(
-                    fontSize: _fontSize,
-                    height: _lineHeight,
-                    color: _readerForeground,
-                    letterSpacing: .35,
-                  ),
-                ),
-              if (_chapterIndex < widget.book.chapters.length - 1) ...[
-                const SizedBox(height: 48),
-                Center(
-                  child: Text(
-                    '下一章 · ${widget.book.chapters[_chapterIndex + 1].title}',
-                    key: const ValueKey('next-chapter-hint'),
-                    style: TextStyle(
-                      color: _readerSecondary,
-                      fontSize: 13,
-                      fontWeight: FontWeight.w600,
-                    ),
-                  ),
-                ),
-              ],
-            ],
-          ),
+    child: SingleChildScrollView(
+      controller: _scrollController,
+      padding: const EdgeInsets.fromLTRB(34, 92, 34, 110),
+      child: SelectionArea(
+        onSelectionChanged: (content) =>
+            _handleSelectionChanged(content?.plainText ?? ''),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            for (var index = 0; index < widget.book.chapters.length; index++)
+              _buildChapterBlock(index),
+          ],
         ),
       ),
     ),
   );
+
+  Widget _buildChapterBlock(int index) {
+    final chapter = widget.book.chapters[index];
+    return Container(
+      key: _chapterKeys[index],
+      margin: EdgeInsets.only(top: index == 0 ? 0 : 40),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(chapter.title, style: _chapterTitleStyle),
+          const SizedBox(height: 22),
+          if (chapter.hasRichContent)
+            fh.Html(
+              key: ValueKey('rich-chapter-$index'),
+              data: chapter.html,
+              extensions: const [TableHtmlExtension(), SvgHtmlExtension()],
+              onLinkTap: (url, _, _) => _openLink(url),
+              style: {
+                'body': fh.Style(
+                  margin: fh.Margins.zero,
+                  padding: fh.HtmlPaddings.zero,
+                  fontSize: fh.FontSize(_fontSize),
+                  lineHeight: fh.LineHeight.number(_lineHeight),
+                  color: _readerForeground,
+                  textAlign: _alignment,
+                ),
+                'img': fh.Style(width: fh.Width.auto()),
+                'table': fh.Style(
+                  backgroundColor: Colors.white.withValues(alpha: .35),
+                ),
+                'blockquote': fh.Style(
+                  border: const Border(
+                    left: BorderSide(color: AppColors.secondary, width: 3),
+                  ),
+                  padding: fh.HtmlPaddings.only(left: 14),
+                ),
+                'pre': fh.Style(
+                  whiteSpace: fh.WhiteSpace.pre,
+                  fontFamily: 'monospace',
+                ),
+              },
+            )
+          else
+            Text(
+              chapter.content,
+              textAlign: _alignment,
+              style: TextStyle(
+                fontSize: _fontSize,
+                height: _lineHeight,
+                color: _readerForeground,
+                letterSpacing: .35,
+              ),
+            ),
+        ],
+      ),
+    );
+  }
 
   Widget _buildPagedBody(BoxConstraints constraints) {
     final pageStyle = TextStyle(
@@ -1130,26 +1376,42 @@ class _ReaderScreenState extends State<ReaderScreen> {
             return Padding(
               padding: const EdgeInsets.fromLTRB(34, 86, 34, 86),
               child: SelectionArea(
-                onSelectionChanged: (content) {
-                  final selected = content?.plainText ?? '';
-                  if (selected != _selectedText && mounted) {
-                    setState(() => _selectedText = selected);
-                  }
-                },
+                onSelectionChanged: (content) =>
+                    _handleSelectionChanged(content?.plainText ?? ''),
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     if (index == 0) ...[
-                      Text(
-                        _chapter.title,
-                        style: TextStyle(
-                          fontSize: _fontSize * .78,
-                          color: _readerSecondary,
+                      if (_chapterIndex > 0)
+                        _chapterNavPill(
+                          label: '上一章',
+                          chapterTitle:
+                              widget.book.chapters[_chapterIndex - 1].title,
+                          icon: Icons.chevron_left_rounded,
+                          onTap: () {
+                            final previous =
+                                widget.book.chapters[_chapterIndex - 1];
+                            _jumpToOffset(
+                              _chapterIndex - 1,
+                              previous.content.length,
+                            );
+                          },
                         ),
-                      ),
+                      Text(_chapter.title, style: _chapterTitleStyle),
                       const SizedBox(height: 18),
                     ],
                     Text(page.text, textAlign: _alignment, style: pageStyle),
+                    if (index == _textPages.length - 1 &&
+                        _chapterIndex < widget.book.chapters.length - 1) ...[
+                      const SizedBox(height: 28),
+                      _chapterNavPill(
+                        label: '下一章',
+                        chapterTitle:
+                            widget.book.chapters[_chapterIndex + 1].title,
+                        icon: Icons.chevron_right_rounded,
+                        onTap: () => _jumpToOffset(_chapterIndex + 1, 0),
+                      ),
+                    ],
                   ],
                 ),
               ),
@@ -1349,6 +1611,7 @@ class _ReaderScreenState extends State<ReaderScreen> {
                                   label: '书签',
                                   foregroundColor: controlForeground,
                                   onTap: () {
+                                    if (!_isPaged) _commitProgress();
                                     widget.readingStore.toggleBookmark(
                                       widget.book,
                                       _chapterIndex,
