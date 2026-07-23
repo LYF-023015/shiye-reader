@@ -129,6 +129,25 @@ void main() {
     expect(find.textContaining('第二章紧随其后，无缝衔接'), findsOneWidget);
   });
 
+  testWidgets('大书懒加载，仅渲染可见章节，不卡死', (tester) async {
+    final book = _book(
+      chapters: [
+        for (var index = 0; index < 80; index++)
+          Chapter(title: '第${index + 1}章', content: '本章正文内容。' * 200),
+      ],
+    );
+    await pumpReader(tester, book: book);
+    await tester.pump(
+      const Duration(milliseconds: 700),
+    ); // flush debounced progress save
+
+    // The first chapter is built and visible...
+    expect(find.text('第1章'), findsOneWidget);
+    // ...but a far-away chapter is NOT built (lazy rendering), which is what
+    // keeps opening a large book from freezing the UI.
+    expect(find.text('第80章'), findsNothing);
+  });
+
   testWidgets('选中文本后批注入口保持可见', (tester) async {
     await pumpReader(tester);
 

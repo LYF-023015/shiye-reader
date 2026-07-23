@@ -146,14 +146,19 @@ class _ReaderScreenState extends State<ReaderScreen> {
       ':${_readerForeground.toARGB32()}'
       ':${MediaQuery.sizeOf(context).width.toStringAsFixed(0)}';
 
-  /// Refreshes cached per-chapter pixel offsets/heights. Cheap on the hot path
-  /// because it only recomputes when a layout-affecting setting changes.
+  /// Refreshes cached per-chapter pixel offsets/heights for chapters that are
+  /// currently built (visible). Lazy rendering means only a few chapters exist
+  /// at once, so this is cheap; it also accumulates offsets as the reader
+  /// scrolls so navigation stays accurate without building the whole book.
   void _ensureChapterGeometry() {
-    if (_currentLayoutSignature == _layoutSignature) return;
-    _layoutSignature = _currentLayoutSignature;
-    _chapterTopOffsets.clear();
-    _chapterBlockHeights.clear();
+    final signatureChanged = _currentLayoutSignature != _layoutSignature;
+    if (signatureChanged) {
+      _layoutSignature = _currentLayoutSignature;
+      _chapterTopOffsets.clear();
+      _chapterBlockHeights.clear();
+    }
     for (var index = 0; index < widget.book.chapters.length; index++) {
+      if (!signatureChanged && _chapterTopOffsets.containsKey(index)) continue;
       final key = _chapterKeys[index];
       final context = key.currentContext;
       final object = context?.findRenderObject();
@@ -337,19 +342,27 @@ class _ReaderScreenState extends State<ReaderScreen> {
     if (_isPaged) return; // paged mode restores inside _buildPagedBody.
     if (!_scrollController.hasClients) return;
     _ensureChapterGeometry();
+    final max = _scrollController.position.maxScrollExtent;
     final index = _chapterIndex.clamp(0, widget.book.chapters.length - 1);
     final top = _chapterTopOffsets[index];
     final height = _chapterBlockHeights[index];
-    if (top == null) return;
-    final contentLength = widget.book.chapters[index].content.length;
-    final fraction =
-        contentLength <= 0 ||
-            (_restoreCharacterOffset == 0 && _restoreChapterProgress > 0)
-        ? _restoreChapterProgress
-        : (_restoreCharacterOffset / contentLength).clamp(0.0, 1.0);
-    final within = (height ?? 0) * fraction;
-    final max = _scrollController.position.maxScrollExtent;
-    _scrollController.jumpTo((top + within).clamp(0.0, max));
+    if (top != null) {
+      final contentLength = widget.book.chapters[index].content.length;
+      final fraction =
+          contentLength <= 0 ||
+              (_restoreCharacterOffset == 0 && _restoreChapterProgress > 0)
+          ? _restoreChapterProgress
+          : (_restoreCharacterOffset / contentLength).clamp(0.0, 1.0);
+      final within = (height ?? 0) * fraction;
+      _scrollController.jumpTo((top + within).clamp(0.0, max));
+      return;
+    }
+    // Target chapter isn't built yet (lazy list): land proportionally in the
+    // whole-book scroll extent, which tracks reading position closely enough.
+    final overall =
+        (index + _restoreChapterProgress.clamp(0, 1)) /
+        widget.book.chapters.length;
+    _scrollController.jumpTo((overall * max).clamp(0.0, max));
   }
 
   void _queueProgressUpdate() {
@@ -1216,20 +1229,15 @@ class _ReaderScreenState extends State<ReaderScreen> {
     key: const ValueKey('reader-page'),
     behavior: HitTestBehavior.opaque,
     onTapUp: _handleReaderTap,
-    child: SingleChildScrollView(
+    // Lazy: only visible chapters are built/laid out, so opening a large
+    // book never blocks the UI thread on a single huge frame. SelectionArea is
+    // applied per chapter block below; wrapping the whole ListView in one
+    // SelectionArea intercepts taps on empty areas.
+    child: ListView.builder(
       controller: _scrollController,
       padding: const EdgeInsets.fromLTRB(34, 92, 34, 110),
-      child: SelectionArea(
-        onSelectionChanged: (content) =>
-            _handleSelectionChanged(content?.plainText ?? ''),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            for (var index = 0; index < widget.book.chapters.length; index++)
-              _buildChapterBlock(index),
-          ],
-        ),
-      ),
+      itemCount: widget.book.chapters.length,
+      itemBuilder: (context, index) => _buildChapterBlock(index),
     ),
   );
 
@@ -1238,54 +1246,58 @@ class _ReaderScreenState extends State<ReaderScreen> {
     return Container(
       key: _chapterKeys[index],
       margin: EdgeInsets.only(top: index == 0 ? 0 : 40),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text(chapter.title, style: _chapterTitleStyle),
-          const SizedBox(height: 22),
-          if (chapter.hasRichContent)
-            fh.Html(
-              key: ValueKey('rich-chapter-$index'),
-              data: chapter.html,
-              extensions: const [TableHtmlExtension(), SvgHtmlExtension()],
-              onLinkTap: (url, _, _) => _openLink(url),
-              style: {
-                'body': fh.Style(
-                  margin: fh.Margins.zero,
-                  padding: fh.HtmlPaddings.zero,
-                  fontSize: fh.FontSize(_fontSize),
-                  lineHeight: fh.LineHeight.number(_lineHeight),
-                  color: _readerForeground,
-                  textAlign: _alignment,
-                ),
-                'img': fh.Style(width: fh.Width.auto()),
-                'table': fh.Style(
-                  backgroundColor: Colors.white.withValues(alpha: .35),
-                ),
-                'blockquote': fh.Style(
-                  border: const Border(
-                    left: BorderSide(color: AppColors.secondary, width: 3),
+      child: SelectionArea(
+        onSelectionChanged: (content) =>
+            _handleSelectionChanged(content?.plainText ?? ''),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(chapter.title, style: _chapterTitleStyle),
+            const SizedBox(height: 22),
+            if (chapter.hasRichContent)
+              fh.Html(
+                key: ValueKey('rich-chapter-$index'),
+                data: chapter.html,
+                extensions: const [TableHtmlExtension(), SvgHtmlExtension()],
+                onLinkTap: (url, _, _) => _openLink(url),
+                style: {
+                  'body': fh.Style(
+                    margin: fh.Margins.zero,
+                    padding: fh.HtmlPaddings.zero,
+                    fontSize: fh.FontSize(_fontSize),
+                    lineHeight: fh.LineHeight.number(_lineHeight),
+                    color: _readerForeground,
+                    textAlign: _alignment,
                   ),
-                  padding: fh.HtmlPaddings.only(left: 14),
+                  'img': fh.Style(width: fh.Width.auto()),
+                  'table': fh.Style(
+                    backgroundColor: Colors.white.withValues(alpha: .35),
+                  ),
+                  'blockquote': fh.Style(
+                    border: const Border(
+                      left: BorderSide(color: AppColors.secondary, width: 3),
+                    ),
+                    padding: fh.HtmlPaddings.only(left: 14),
+                  ),
+                  'pre': fh.Style(
+                    whiteSpace: fh.WhiteSpace.pre,
+                    fontFamily: 'monospace',
+                  ),
+                },
+              )
+            else
+              Text(
+                chapter.content,
+                textAlign: _alignment,
+                style: TextStyle(
+                  fontSize: _fontSize,
+                  height: _lineHeight,
+                  color: _readerForeground,
+                  letterSpacing: .35,
                 ),
-                'pre': fh.Style(
-                  whiteSpace: fh.WhiteSpace.pre,
-                  fontFamily: 'monospace',
-                ),
-              },
-            )
-          else
-            Text(
-              chapter.content,
-              textAlign: _alignment,
-              style: TextStyle(
-                fontSize: _fontSize,
-                height: _lineHeight,
-                color: _readerForeground,
-                letterSpacing: .35,
               ),
-            ),
-        ],
+          ],
+        ),
       ),
     );
   }
