@@ -159,8 +159,10 @@ class _ReaderScreenState extends State<ReaderScreen> {
       final object = context?.findRenderObject();
       if (object == null || !object.attached) continue;
       final viewport = RenderAbstractViewport.of(object);
-      _chapterTopOffsets[index] =
-          viewport.getOffsetToReveal(object, 0).offset.clamp(0.0, double.infinity);
+      _chapterTopOffsets[index] = viewport
+          .getOffsetToReveal(object, 0)
+          .offset
+          .clamp(0.0, double.infinity);
       if (object is RenderBox && object.hasSize) {
         _chapterBlockHeights[index] = object.size.height;
       }
@@ -194,9 +196,7 @@ class _ReaderScreenState extends State<ReaderScreen> {
     }
     final top = _chapterTopOffsets[index] ?? 0.0;
     final height = _chapterBlockHeights[index] ?? 1.0;
-    final local = height <= 0
-        ? 0.0
-        : ((probe - top) / height).clamp(0.0, 1.0);
+    final local = height <= 0 ? 0.0 : ((probe - top) / height).clamp(0.0, 1.0);
     return (index: index, local: local);
   }
 
@@ -288,9 +288,9 @@ class _ReaderScreenState extends State<ReaderScreen> {
           _speakNextChunk();
         } else {
           setState(() => _speaking = false);
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text('全书朗读完毕')),
-          );
+          ScaffoldMessenger.of(
+            context,
+          ).showSnackBar(const SnackBar(content: Text('全书朗读完毕')));
         }
       })
       ..setCancelHandler(() {
@@ -342,7 +342,8 @@ class _ReaderScreenState extends State<ReaderScreen> {
     final height = _chapterBlockHeights[index];
     if (top == null) return;
     final contentLength = widget.book.chapters[index].content.length;
-    final fraction = contentLength <= 0 ||
+    final fraction =
+        contentLength <= 0 ||
             (_restoreCharacterOffset == 0 && _restoreChapterProgress > 0)
         ? _restoreChapterProgress
         : (_restoreCharacterOffset / contentLength).clamp(0.0, 1.0);
@@ -602,14 +603,15 @@ class _ReaderScreenState extends State<ReaderScreen> {
     if (!_scrollController.hasClients) return;
     final pos = _positionFromScroll();
     final chapterLength = widget.book.chapters[pos.index].content.length;
-    final overall =
-        ((pos.index + pos.local) / widget.book.chapters.length).clamp(0.0, 1.0);
+    final overall = ((pos.index + pos.local) / widget.book.chapters.length)
+        .clamp(0.0, 1.0);
     _restoreChapterProgress = pos.local;
     _restoreCharacterOffset = (chapterLength * pos.local).round();
     final chapterChanged = pos.index != _chapterIndex;
     // Only rebuild while scrolling when something visible depends on it: the
     // progress slider/controls are showing, or the current chapter changed.
-    final needsRebuild = rebuild && mounted && (_showControls || chapterChanged);
+    final needsRebuild =
+        rebuild && mounted && (_showControls || chapterChanged);
     if (needsRebuild) {
       setState(() {
         _liveProgress = overall;
@@ -640,8 +642,9 @@ class _ReaderScreenState extends State<ReaderScreen> {
     setState(() {
       _chapterIndex = chapterIndex;
       _restoreCharacterOffset = offset;
-      _restoreChapterProgress =
-          chapter.content.isEmpty ? 0 : offset / chapter.content.length;
+      _restoreChapterProgress = chapter.content.isEmpty
+          ? 0
+          : offset / chapter.content.length;
       _liveProgress =
           (chapterIndex + _restoreChapterProgress) /
           widget.book.chapters.length;

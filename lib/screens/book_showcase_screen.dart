@@ -58,8 +58,11 @@ class BookShowcaseScreen extends StatelessWidget {
     // Estimate the within-chapter position from the overall progress so the
     // preview opens near where the reader actually is, snapping to a sentence
     // boundary for a clean start.
-    final local = ((book.progress * book.chapters.length) - _currentChapterIndex)
-        .clamp(0.0, 1.0);
+    final local =
+        ((book.progress * book.chapters.length) - _currentChapterIndex).clamp(
+          0.0,
+          1.0,
+        );
     var start = (local * content.length).floor();
     if (start > 0) {
       final boundary = content.lastIndexOf(RegExp(r'[。！？.!?]'), start);
@@ -478,11 +481,7 @@ class _BookInformationPanel extends StatelessWidget {
             const SizedBox(height: 17),
             Row(
               children: [
-                Icon(
-                  Icons.menu_book_rounded,
-                  size: 14,
-                  color: readableAccent,
-                ),
+                Icon(Icons.menu_book_rounded, size: 14, color: readableAccent),
                 const SizedBox(width: 6),
                 Flexible(
                   child: Text(

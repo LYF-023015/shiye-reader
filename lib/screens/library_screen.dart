@@ -1072,13 +1072,15 @@ class _LibraryScreenState extends State<LibraryScreen>
                                 index: safeIndex,
                                 count: books.length,
                                 onOpen: () => _openBook(books[safeIndex]),
-                                onPrevious: books.length < 2 ||
+                                onPrevious:
+                                    books.length < 2 ||
                                         (_isLooping(books.length)
                                             ? false
                                             : safeIndex <= 0)
                                     ? null
                                     : () => _stepShelf(books, -1),
-                                onNext: books.length < 2 ||
+                                onNext:
+                                    books.length < 2 ||
                                         (_isLooping(books.length)
                                             ? false
                                             : safeIndex >= books.length - 1)
@@ -1400,7 +1402,9 @@ class _CoverFlowQueue extends StatelessWidget {
               // Keep recycled entries outside the visible stage to avoid edge
               // flashes while a transformed card crosses an integer page.
               final radius = books.length == 1 ? 0 : 4;
-              final first = loop ? center - radius : math.max(0, center - radius);
+              final first = loop
+                  ? center - radius
+                  : math.max(0, center - radius);
               final last = loop
                   ? center + radius
                   : math.min(books.length - 1, center + radius);
@@ -1408,10 +1412,10 @@ class _CoverFlowQueue extends StatelessWidget {
               final committedVirtualIndex = books.length <= 1
                   ? 0
                   : loop
-                      ? fallbackIndex +
-                            ((page - fallbackIndex) / books.length).round() *
-                                books.length
-                      : page.round().clamp(0, books.length - 1);
+                  ? fallbackIndex +
+                        ((page - fallbackIndex) / books.length).round() *
+                            books.length
+                  : page.round().clamp(0, books.length - 1);
               final entries = <_FlowEntry>[
                 for (
                   var virtualIndex = first;
